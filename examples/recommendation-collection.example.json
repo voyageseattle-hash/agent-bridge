@@ -1,0 +1,54 @@
+{
+  "schemaVersion": 2,
+  "objective": "Make the creator onboarding workflow safe, understandable, and reversible.",
+  "scope": "brief",
+  "briefSha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "runs": [
+    {
+      "agentId": "manus",
+      "status": "partial-output",
+      "sessionId": "task-remote-001",
+      "invalidRecommendationCount": 1,
+      "invalidRecommendations": [
+        {
+          "index": 1,
+          "detail": "RECOMMENDATION_FORMAT_INVALID: recommendations[1].priority is invalid"
+        }
+      ],
+      "detail": "1 malformed recommendation item(s) omitted",
+      "recommendations": [
+        {
+          "title": "Expose exact approval scope",
+          "priority": "P1",
+          "rationale": "A concise transaction preview reduces accidental remote or paid actions.",
+          "proposedChange": "Add a human-readable approval summary before remote execution.",
+          "evidence": [
+            "The sanitized brief describes separate policy and per-call gates."
+          ],
+          "acceptanceTests": [
+            "The preview identifies remote egress and unknown cost independently."
+          ]
+        }
+      ]
+    }
+  ],
+  "recommendations": [
+    {
+      "title": "Expose exact approval scope",
+      "priority": "P1",
+      "rationale": "The creator must understand what one decision authorizes.",
+      "proposedChange": "Display agent, root, action, data class, expiry, use limit, and estimated cost before approval.",
+      "evidence": [
+        "The sanitized brief describes separate policy and per-call gates."
+      ],
+      "acceptanceTests": [
+        "A changed root or agent fails exact-scope consumption.",
+        "The preview identifies remote egress and unknown cost independently."
+      ],
+      "sources": [
+        "manus"
+      ]
+    }
+  ],
+  "completedAt": "2030-01-01T00:00:00.000Z"
+}

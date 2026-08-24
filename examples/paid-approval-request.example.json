@@ -1,0 +1,15 @@
+{
+  "category": "paid_or_unknown_cost",
+  "subject": "agent-bridge:delegate_task",
+  "action": "delegate:manus",
+  "data_classification": "internal",
+  "root": "<workspace>",
+  "agent": "manus",
+  "payload_sha256": "<preview_turn_approval.payload_sha256 for the exact full approval envelope>",
+  "requested_by": "creator",
+  "reason": "Authorize one Manus review whose provider cost is not known in advance.",
+  "currency": "USD",
+  "expires_in_sec": 900,
+  "consume_once": true,
+  "max_uses": 1
+}

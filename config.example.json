@@ -1,0 +1,44 @@
+{
+  "agents": {
+    "codex": {
+      "enabled": false,
+      "bin": "codex"
+    },
+    "claude": {
+      "enabled": true,
+      "bin": "claude"
+    },
+    "manus": {
+      "enabled": false,
+      "credentialFile": "~/.agent-bridge/secrets/manus-api-key",
+      "defaultModel": "manus-1.6",
+      "acknowledgeAccountDefaultCapabilities": false,
+      "accountCapabilityProfile": "replace-with-stable-reviewed-profile-id"
+    },
+    "gemini": {
+      "enabled": false
+    }
+  },
+  "defaults": {
+    "timeoutSec": 900,
+    "sandbox": "read-only"
+  },
+  "allowedRoots": [],
+  "policy": {
+    "sandboxCeiling": "workspace-write",
+    "remoteEgress": {
+      "enabled": false,
+      "allowedAgents": [],
+      "allowedRoots": [],
+      "allowedDataClasses": []
+    },
+    "cumulativeRemoteCost": {
+      "currency": "USD",
+      "maxReservedCents": 5000
+    }
+  },
+  "handoffMaxChars": 24000,
+  "stateDir": "~/.agent-bridge",
+  "sessionLockWaitMs": 30000,
+  "sessionLockStaleMs": 7500000
+}

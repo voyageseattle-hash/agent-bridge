@@ -1,0 +1,14 @@
+{
+  "category": "remote_egress",
+  "subject": "agent-bridge:delegate_task",
+  "action": "delegate:manus",
+  "data_classification": "internal",
+  "root": "<workspace>",
+  "agent": "manus",
+  "payload_sha256": "<preview_turn_approval.payload_sha256 for the exact full approval envelope>",
+  "requested_by": "creator",
+  "reason": "Obtain an independent remote review of the sanitized workflow brief; no source files, credentials, or client data are included.",
+  "expires_in_sec": 900,
+  "consume_once": true,
+  "max_uses": 1
+}

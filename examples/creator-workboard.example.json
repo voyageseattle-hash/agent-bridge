@@ -1,0 +1,76 @@
+{
+  "title": "Creator onboarding release gate",
+  "objective": "Demonstrate that a creator can collect recommendations, approve safe work, verify the result, and roll back the candidate.",
+  "cwd": "<workspace>",
+  "max_parallel": 2,
+  "items": [
+    {
+      "key": "audit",
+      "title": "Audit the creator workflow",
+      "instructions": "Inspect the documented local workflow in read-only mode. Report concrete gaps without editing files.",
+      "kind": "research",
+      "acceptance_criteria": [
+        "Every finding cites a path, command, or bounded observation.",
+        "Remote capability is not represented as local filesystem access."
+      ],
+      "requirements": {
+        "data_class": "internal",
+        "filesystem": "read-only",
+        "network": "restricted",
+        "capabilities": [
+          "structuredOutput"
+        ]
+      },
+      "artifacts": [],
+      "evidence": [],
+      "approval": {
+        "required": false
+      },
+      "budget": {
+        "max_attempts": 2,
+        "max_wall_sec": 600,
+        "token_budget_hint": 12000
+      }
+    },
+    {
+      "key": "validate",
+      "title": "Validate accepted corrections",
+      "instructions": "Evaluate the resulting tree against the acceptance checklist. Do not modify the workspace.",
+      "depends_on": [
+        "audit"
+      ],
+      "kind": "validation",
+      "acceptance_criteria": [
+        "Automated checks include exact command and exit code.",
+        "Unrun live checks remain not-run or blocked."
+      ],
+      "requirements": {
+        "data_class": "internal",
+        "filesystem": "read-only",
+        "network": "restricted",
+        "capabilities": [
+          "structuredOutput"
+        ]
+      },
+      "artifacts": [
+        {
+          "id": "acceptance-checklist",
+          "kind": "document",
+          "path": "docs/LIVE_ACCEPTANCE.md",
+          "media_type": "text/markdown",
+          "data_class": "public",
+          "accessibility": "local"
+        }
+      ],
+      "evidence": [],
+      "approval": {
+        "required": false
+      },
+      "budget": {
+        "max_attempts": 2,
+        "max_wall_sec": 600,
+        "token_budget_hint": 12000
+      }
+    }
+  ]
+}

@@ -1,0 +1,25 @@
+node_modules/
+dist/
+coverage/
+*.mcpb
+*.log
+.release-staging/
+.discarded-stale-release/
+
+# Local operator configuration, credentials, state, and private evidence.
+/config.json
+.env
+.env.*
+!.env.example
+.npmrc
+secrets/
+*.pem
+*.key
+*.pfx
+*.p12
+/_connection-test/
+/.agent-bridge/
+/state/
+/sessions/
+/evidence/
+/backups/

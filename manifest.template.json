@@ -1,0 +1,99 @@
+{
+  "manifest_version": "0.3",
+  "name": "agent-bridge",
+  "display_name": "Agent Bridge",
+  "version": "__PACKAGE_VERSION__",
+  "description": "Local MCP bridge for controlled, auditable collaboration between coding agents.",
+  "long_description": "Coordinate Codex, Claude, Gemini, and optional Manus tasks through one local MCP server. Agent Bridge enforces project roots, sandbox ceilings, explicit remote-egress consent, bounded transcripts, cancellation, and durable handoffs.",
+  "author": { "name": "Agent Bridge maintainers" },
+  "license": "MIT",
+  "privacy_policies": [
+    "https://manus.im/privacy"
+  ],
+  "compatibility": {
+    "platforms": ["win32", "darwin", "linux"],
+    "runtimes": { "node": ">=20" }
+  },
+  "server": {
+    "type": "node",
+    "entry_point": "server/agent-bridge.mjs",
+    "mcp_config": {
+      "command": "node",
+      "args": [
+        "${__dirname}/server/agent-bridge.mjs"
+      ],
+      "env": {
+        "AGENT_BRIDGE_BUNDLE_MODE": "1",
+        "AGENT_BRIDGE_ALLOWED_ROOT": "${user_config.allowed_root}",
+        "AGENT_BRIDGE_STATE_DIR": "${HOME}/.agent-bridge",
+        "AGENT_BRIDGE_ENABLE_CODEX": "${user_config.enable_codex}",
+        "AGENT_BRIDGE_ENABLE_CLAUDE": "${user_config.enable_claude}",
+        "AGENT_BRIDGE_ENABLE_GEMINI": "${user_config.enable_gemini}",
+        "AGENT_BRIDGE_ENABLE_MANUS": "${user_config.enable_manus}",
+        "AGENT_BRIDGE_MANUS_CREDENTIAL_FILE": "${user_config.manus_credential_file}",
+        "AGENT_BRIDGE_MANUS_ACKNOWLEDGE_ACCOUNT_DEFAULT_CAPABILITIES": "${user_config.manus_acknowledge_account_default_capabilities}",
+        "AGENT_BRIDGE_MANUS_ACCOUNT_CAPABILITY_PROFILE": "${user_config.manus_account_capability_profile}",
+        "AGENT_BRIDGE_DEFAULT_SANDBOX": "read-only",
+        "AGENT_BRIDGE_SANDBOX_CEILING": "read-only",
+        "AGENT_BRIDGE_REMOTE_EGRESS": "false"
+      }
+    }
+  },
+  "user_config": {
+    "allowed_root": {
+      "type": "directory",
+      "title": "Creator project folder",
+      "description": "Choose one project folder that delegated agents may access. Add more roots later in the advanced JSON configuration.",
+      "required": true
+    },
+    "enable_codex": {
+      "type": "boolean",
+      "title": "Enable Codex CLI",
+      "description": "Requires an installed and signed-in Codex CLI.",
+      "default": true
+    },
+    "enable_claude": {
+      "type": "boolean",
+      "title": "Enable Claude Code CLI",
+      "description": "Requires an installed and signed-in Claude Code CLI.",
+      "default": true
+    },
+    "enable_gemini": {
+      "type": "boolean",
+      "title": "Enable Gemini CLI",
+      "description": "Optional; disabled by default because read-only enforcement is limited.",
+      "default": false
+    },
+    "enable_manus": {
+      "type": "boolean",
+      "title": "Enable Manus API",
+      "description": "Optional remote backend. Remote egress remains disabled until advanced policy is configured.",
+      "default": false
+    },
+    "manus_credential_file": {
+      "type": "file",
+      "title": "Manus credential file",
+      "description": "Optional path to a user-only file containing the Manus API key. Never put the key in this manifest.",
+      "required": false
+    },
+    "manus_acknowledge_account_default_capabilities": {
+      "type": "boolean",
+      "title": "Acknowledge Manus account defaults",
+      "description": "Enable only after reviewing the Manus account's default skills. This does not disable those provider-side capabilities.",
+      "default": false
+    },
+    "manus_account_capability_profile": {
+      "type": "string",
+      "title": "Reviewed Manus capability profile",
+      "description": "Stable 1-128 character label for the reviewed Manus account/default-skill set, for example reviewed-2026-08-19.",
+      "required": false
+    }
+  },
+  "tools_generated": true,
+  "_meta": {
+    "com.agentbridge.release": {
+      "source_git_sha": "__GIT_SHA__",
+      "runtime_sha256": "__RUNTIME_SHA256__"
+    }
+  }
+}

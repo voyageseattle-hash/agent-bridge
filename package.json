@@ -1,0 +1,43 @@
+{
+  "name": "agent-bridge-mcp",
+  "version": "0.3.0-rc.8",
+  "description": "A local MCP bridge for delegating and handing work between coding-agent CLIs.",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "agent-bridge-mcp": "dist/agent-bridge.mjs"
+  },
+  "files": [
+    "dist/",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "build": "node scripts/build.mjs",
+    "package": "node scripts/package.mjs",
+    "prepack": "npm run build",
+    "test": "npm run build && node --test --test-concurrency=1 test/*.test.mjs",
+    "smoke": "npm run build && node test/smoke.mjs",
+    "canary:release": "node scripts/canary-release.mjs",
+    "evidence:release": "node scripts/export-release-evidence.mjs",
+    "evidence:verify": "node scripts/verify-release-evidence.mjs",
+    "test:live:codex": "npm run build && node test/live-codex.mjs",
+    "test:live:claude": "npm run build && node test/live-claude.mjs",
+    "test:live:manus": "npm run build && node test/live-manus.mjs",
+    "verify": "npm run typecheck && npm test && npm run smoke"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.26.0",
+    "zod": "^3.25.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "esbuild": "^0.25.0",
+    "typescript": "^5.9.0"
+  },
+  "license": "MIT"
+}

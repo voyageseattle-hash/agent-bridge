@@ -1,0 +1,2 @@
+scripts/*.ps1 text eol=lf
+scripts/*.psm1 text eol=lf
