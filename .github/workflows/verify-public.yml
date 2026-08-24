@@ -25,5 +25,13 @@ jobs:
         run: npm ci
       - name: Scan tracked files and history
         run: npm run privacy:scan:history
-      - name: Verify source
-        run: npm run verify
+      - name: Typecheck source
+        run: npm run typecheck
+      - name: Build source
+        run: npm run build
+      - name: Test the redacting scanner
+        run: node --test test/privacy-scan.test.mjs
+      - name: Run provider-disabled smoke check
+        run: npm run smoke
+      - name: Audit production dependencies
+        run: npm audit --omit=dev --audit-level=high
