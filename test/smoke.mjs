@@ -176,7 +176,7 @@ try {
     const budgetDir = join(state, "budgets");
     const budgetPath = join(budgetDir, "cumulative-remote-cost.json");
     await mkdir(budgetDir, { recursive: true });
-    const diagnosticSecret = "sk-DIAGNOSTIC_BUDGET_SECRET_12345678";
+  const diagnosticSecret = "sk-test-fixture-DIAGNOSTIC_BUDGET_SECRET_12345678";
     await writeFile(budgetPath, JSON.stringify({ schemaVersion: 1, currency: "USD", committedCents: 0, reservationCount: 0, recentReservations: [], [`api_key=${diagnosticSecret}`]: true }), "utf8");
     const degradedDiagnostic = await call(client, "diagnose_install", {});
     assert.notEqual(degradedDiagnostic.isError, true, "budget corruption must not hide install and rollback diagnostics");

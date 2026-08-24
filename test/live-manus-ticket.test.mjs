@@ -34,7 +34,7 @@ test("Manus live preview creates a cryptographic pending ticket without contacti
         AGENT_BRIDGE_EXPECTED_VERSION: "0.3.0-preview",
         AGENT_BRIDGE_EXPECTED_RUNTIME_SHA256: sha256(runtimeBytes),
         AGENT_BRIDGE_MANUS_CREDENTIAL_FILE: credential,
-        MANUS_API_KEY: "must-not-be-used",
+    MANUS_API_KEY: "test-fixture-must-not-be-used",
         MANUS_API_BASE_URL: "http://127.0.0.1:9",
       },
     });
@@ -130,7 +130,7 @@ test("confirmation digest binds every execution-critical field and evidence path
 test("Manus live child environment strips ambient raw API authority", () => {
   assert.deepEqual(scrubManusEnvironment({
     PATH: "safe",
-    MANUS_API_KEY: "must-not-pass",
+    MANUS_API_KEY: "test-fixture-must-not-pass",
     MANUS_API_BASE_URL: "https://unexpected.invalid",
     AGENT_BRIDGE_CONFIG: "wrong-config",
   }), { PATH: "safe" });

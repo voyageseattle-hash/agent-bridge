@@ -29,6 +29,7 @@ const gitSha = gitRequired("rev-parse", "HEAD");
 if (!gitSha) throw new Error("release packaging requires a committed Git revision");
 const worktree = gitRequired("status", "--porcelain");
 if (worktree) throw new Error(`release packaging requires a clean worktree:\n${worktree}`);
+execFileSync(process.execPath, [join(root, "scripts", "scan-public.mjs"), "--root", root], { cwd: root, stdio: "inherit" });
 
 if (existsSync(output)) throw new Error(`refusing to overwrite existing package: ${output}`);
 if (existsSync(temporaryOutput)) throw new Error(`refusing stale temporary package path: ${temporaryOutput}`);
@@ -77,6 +78,7 @@ let bundleHash;
 try {
   writeFileSync(temporaryOutput, archive, { flag: "wx" });
   verifyPackage(temporaryOutput, runtimeBytes, sourceMapBytes, operations, files);
+  execFileSync(process.execPath, [join(root, "scripts", "scan-public.mjs"), "--no-tree", "--archive", temporaryOutput], { cwd: root, stdio: "inherit" });
   assertReleaseOperationsMatchWorkingTree(root, operations, gitSha);
   const publicationSha = gitRequired("rev-parse", "HEAD");
   if (publicationSha !== gitSha) throw new Error(`release HEAD changed during packaging: expected ${gitSha}, got ${publicationSha}`);

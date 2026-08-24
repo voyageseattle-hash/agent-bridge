@@ -60,7 +60,10 @@ test("tracked-file drift during packaging fails without publishing and removes c
     assert.deepEqual(await readdir(fixture.stagingRoot), [], "failed candidate left staging debris");
     assert.match(git(fixture.repo, "status", "--porcelain"), /scripts\/check-cutover-readiness\.ps1/i);
   } finally {
-    if (watcher && watcher.exitCode === null) watcher.kill();
+    if (watcher && watcher.exitCode === null) {
+      watcher.kill();
+      await waitForExit(watcher);
+    }
     await fixture.cleanup();
   }
 });
@@ -77,6 +80,7 @@ async function createFixture(label) {
   await mkdir(stagingRoot, { recursive: true });
   await copyFile(resolve("scripts/package.mjs"), join(scripts, "package.mjs"));
   await copyFile(resolve("scripts/release-operations.mjs"), join(scripts, "release-operations.mjs"));
+  await copyFile(resolve("scripts/scan-public.mjs"), join(scripts, "scan-public.mjs"));
   for (const [index, name] of OPERATION_SOURCES.entries()) {
     await writeFile(join(scripts, name), `# committed operation ${index + 1}: ${name}\n`);
   }

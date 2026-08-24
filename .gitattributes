@@ -1,2 +1,4 @@
 scripts/*.ps1 text eol=lf
 scripts/*.psm1 text eol=lf
+/HANDOFF.md export-ignore
+/.github export-ignore

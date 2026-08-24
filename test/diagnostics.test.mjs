@@ -98,7 +98,7 @@ test("diagnostics warn for Windows and POSIX filesystem roots", () => {
 });
 
 test("diagnostic detail sanitizer redacts common provider credential shapes and bounds output", () => {
-  const raw = "\u001b[31mBearer abc123\nforged: usable api_key=sk-abcdefghijklmnop https://user:pass@example.test/?token=topsecret " + "x".repeat(200);
+  const raw = "\u001b[31mBearer abc123\nforged: usable api_key=sk-test-fixture-abcdefghijklmnop https://user:pass@example.invalid/?token=topsecret " + "x".repeat(200);
   const sanitized = sanitizeDiagnosticDetail(raw, 80);
   assert.ok(sanitized.length <= 80);
   assert.doesNotMatch(sanitized, /abc123|abcdefghijklmnop|user:pass|topsecret/);

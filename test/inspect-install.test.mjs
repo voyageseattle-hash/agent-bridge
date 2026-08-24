@@ -13,7 +13,7 @@ test("install inspection counts bridge processes without disclosing their argume
   const appData = join(root, "roaming");
   const localAppData = join(root, "local");
   const installRoot = join(profile, ".codex", "agent-bridge");
-  const secret = "sk-inspection-must-never-be-returned-1234567890";
+  const secret = "sk-test-fixture-inspection-must-never-be-returned-1234567890";
   let child;
   try {
     await mkdir(installRoot, { recursive: true });

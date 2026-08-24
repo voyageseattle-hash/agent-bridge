@@ -98,7 +98,7 @@ test("Manus resumes using task.sendMessage", async () => {
 });
 
 test("Manus surfaces authentication failures without exposing the API key", async () => {
-  const adapter = acknowledgedManus({ apiKey: "secret-that-must-not-appear", fetch: async () => json({ code: 401, message: "invalid key" }, 401) });
+  const adapter = acknowledgedManus({ apiKey: "test-fixture-secret-that-must-not-appear", fetch: async () => json({ code: 401, message: "invalid key" }, 401) });
   await assert.rejects(adapter.execute(request("hello")), (error) => {
     assert.ok(error instanceof ManusApiError);
     assert.equal(error.status, 401);

@@ -16,6 +16,8 @@
     "typecheck": "tsc --noEmit",
     "build": "node scripts/build.mjs",
     "package": "node scripts/package.mjs",
+    "privacy:scan": "node scripts/scan-public.mjs --root .",
+    "privacy:scan:history": "node scripts/scan-public.mjs --root . --history",
     "prepack": "npm run build",
     "test": "npm run build && node --test --test-concurrency=1 test/*.test.mjs",
     "smoke": "npm run build && node test/smoke.mjs",
@@ -25,7 +27,7 @@
     "test:live:codex": "npm run build && node test/live-codex.mjs",
     "test:live:claude": "npm run build && node test/live-claude.mjs",
     "test:live:manus": "npm run build && node test/live-manus.mjs",
-    "verify": "npm run typecheck && npm test && npm run smoke"
+    "verify": "npm run privacy:scan && npm run typecheck && npm test && npm run smoke"
   },
   "engines": {
     "node": ">=20"

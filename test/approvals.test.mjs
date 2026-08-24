@@ -120,7 +120,7 @@ test("cost metadata is normalized and paid or unknown cost requests retain curre
 test("secret values and unknown input scope fields are rejected before persistence", async () => {
   const f = await fixture();
   try {
-    assert.throws(() => f.store.create(request({ reason: "use sk-abcdefghijklmnopqrstuvwxyz123456" })), /SECRET_MATERIAL_REJECTED/);
+  assert.throws(() => f.store.create(request({ reason: "use sk-test-fixture-abcdefghijklmnopqrstuvwxyz123456" })), /SECRET_MATERIAL_REJECTED/);
     assert.throws(() => f.store.create(request({ scope: scope({ surprise: true }) })), /unknown field/);
     assert.throws(() => f.store.create(request({ scope: scope({ payloadSha256: "A".repeat(64) }) })), /lowercase SHA-256/);
     assert.throws(() => f.store.create(request({ scope: scope({ payloadSha256: "a".repeat(63) }) })), /lowercase SHA-256/);

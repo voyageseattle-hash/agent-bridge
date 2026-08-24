@@ -102,7 +102,7 @@ test("confirmation prompts omit request narratives and reject secret-like or spo
     assert.ok(prompt.length <= 8_192);
   }
   assert.throws(
-    () => buildApprovalElicitationRequest(approval({ scope: { ...record.scope, action: "send sk-abcdefghijklmnopqrstuvwxyz123456" } })),
+    () => buildApprovalElicitationRequest(approval({ scope: { ...record.scope, action: "send sk-test-fixture-abcdefghijklmnopqrstuvwxyz123456" } })),
     /SECRET_REJECTED/,
   );
   assert.throws(

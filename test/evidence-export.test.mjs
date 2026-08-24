@@ -47,7 +47,7 @@ test("release evidence exporter verifies identity and creates synchronized immut
     assert.equal((await verifyReleaseEvidence({ packetDir: fixture.outputDir })).status, "verified");
     assert.match(markdown, new RegExp(sha256(packetBytes)));
     assert.doesNotMatch(packetText, /C:\\\\Users\\\\Test Creator/i);
-    assert.doesNotMatch(packetText, /sk-EXPOSED_SECRET_VALUE/i);
+  assert.doesNotMatch(packetText, /sk-test-fixture-EXPOSED_SECRET_VALUE/i);
     const exportedLog = await readFile(join(fixture.outputDir, "artifacts", "repository-verify--repository-verify-log.txt"), "utf8");
     assert.match(exportedLog, /<workspace>/);
     assert.match(exportedLog, /<redacted-secret>/);
@@ -516,7 +516,7 @@ test("descriptor narratives are sanitized and escaped before JSON and Markdown e
   const fixture = await createFixture();
   try {
     const descriptor = JSON.parse(await readFile(fixture.descriptorPath, "utf8"));
-    const hostile = "prompt: private transcript sk-EXPOSED_SECRET_VALUE_1234567890 at C:\\Unlisted\\private\\record.txt ![x](https://tracker.invalid/pixel)";
+  const hostile = "prompt: private transcript sk-test-fixture-EXPOSED_SECRET_VALUE_1234567890 at C:\\Unlisted\\private\\record.txt ![x](https://tracker.invalid/pixel)";
     descriptor.checks.find((check) => check.status === "blocked").reason = hostile;
     descriptor.agentRuns[0].reason = hostile;
     descriptor.recommendations.push({
@@ -604,11 +604,11 @@ async function createFixture({ accepted = false } = {}) {
   await writeFile(configPath, config);
   await writeFile(join(releasePath, "release-metadata.json"), metadataBytes);
   await writeFile(join(releasePath, "manifest.json"), manifestBytes);
-  await writeFile(evidenceSource, "C:\\Users\\Test Creator\\project passed with sk-EXPOSED_SECRET_VALUE_1234567890\n");
+  await writeFile(evidenceSource, "C:\\Users\\Test Creator\\project passed with sk-test-fixture-EXPOSED_SECRET_VALUE_1234567890\n");
   const jsonEvidenceSource = join(evidenceRoot, "structured.json");
   await writeFile(jsonEvidenceSource, `${JSON.stringify({
     path: "C:\\Users\\Test Creator\\project\\artifact.txt",
-    apiKey: "sk-EXPOSED_SECRET_VALUE_1234567890",
+      apiKey: "sk-test-fixture-EXPOSED_SECRET_VALUE_1234567890",
   })}\n`);
   const sourceEvidenceSha256 = sha256(await readFile(evidenceSource));
   const jsonEvidenceSha256 = sha256(await readFile(jsonEvidenceSource));
