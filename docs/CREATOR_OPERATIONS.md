@@ -1,6 +1,6 @@
 # Agent Bridge creator operations
 
-This guide is the operating path for a creator using Codex, Claude, and Manus together. It assumes an immutable Agent Bridge v0.3 release has already been installed. Do not use a source checkout or a development bundle as the live server.
+This guide is the operating path for a creator using Agent Bridge. Codex and Claude are the local adapter paths required by RC9's supported profiles; Manus is an optional remote integration and is not assumed active. It assumes an immutable Agent Bridge v0.3 release has already been installed. Do not use a source checkout or a development bundle as the live server.
 
 ## Choose the agent by evidence boundary
 
@@ -23,7 +23,7 @@ Use the most restrictive class that fits the whole payload, including paths, exc
 | `public` | Published documentation, public website copy, released source | May be sent only when remote egress policy and a fresh scoped approval allow it |
 | `internal` | Unpublished plans, ordinary source excerpts, non-sensitive project notes | Sanitize first; require explicit remote-egress approval |
 | `confidential` | Client material, private business data, unreleased commercial assets | Prefer local agents; send remotely only after a specific risk decision and narrow approval |
-| `restricted` | API keys, passwords, session tokens, private keys, recovery codes, regulated identity data | Do not send to any agent prompt or transcript; reference the credential by name or file location only |
+| `restricted` | API keys, passwords, session tokens, private keys, recovery codes, regulated identity data | Do not send to any agent prompt or shared evidence; use only an abstract credential name there, and keep any actual file path in protected config or private operations evidence |
 
 Classification is not declassification. Removing a filename does not make confidential content public. If a brief combines classes, use the highest class.
 
@@ -47,7 +47,7 @@ See [approval-request.example.json](../examples/approval-request.example.json) a
 
 ## Run the first normal remote Manus turn
 
-This is the normal task-execution path. `preview_manus_confirmation` is **not** part of it; that tool is only for a task already paused in the provider's `waiting` state.
+Follow this section only when the derived release profile is `windows-local-manus` and Manus is explicitly enabled. RC9 treats that profile as diagnostic and refuses accepted export until live artifacts are bound to its shared-config profile input. A `windows-local-core` acceptance says **“Manus disabled; not live-certified”** and is not authority to enable the integration. This is the normal task-execution path. `preview_manus_confirmation` is **not** part of it; that tool is only for a task already paused in the provider's `waiting` state.
 
 1. Run `list_agents` and confirm Manus is usable, is marked as a direct remote API, and is not represented as having local filesystem access.
 2. Call `preview_turn_approval` with the exact Manus prompt, canonical allowed working root, model, sandbox, timeout, `allow_remote_egress=true`, and reviewed `data_classification`. It does not accept cost fields. Review the finalized prompt hash, complete approval-envelope hash, exact approval scope, provider/capability profile, budget result, and returned session revision. Preview is local-only.
@@ -67,7 +67,7 @@ This is the normal task-execution path. `preview_manus_confirmation` is **not** 
 
 The bridge never reflects Manus's dynamic `confirm_input_schema` or `waiting_description`. It refuses user-question replies, secret requests, browser selection, actual email sends, premium video, accepting high-credit work, deploy/terminal/calendar/marketing actions, OAuth renewal, and persistent grants. The provider contract is documented in [task.listMessages](https://open.manus.ai/docs/v2/task.listMessages), [task.confirmAction](https://open.manus.ai/docs/v2/task.confirmAction), and the [task lifecycle](https://open.manus.ai/docs/v2/task-lifecycle).
 
-Final release acceptance requires a passing `manus-waiting-action-canary` remote-service record. If no safe naturally occurring waiting event exists, record the gate as blocked; never create paid or externally consequential work merely to make this gate pass.
+A future release that accepts `windows-local-manus` requires a passing `manus-waiting-action-canary` remote-service record. RC9 refuses accepted export for that profile. If no safe naturally occurring waiting event exists, record the gate as blocked; never create paid or externally consequential work merely to make this gate pass.
 
 ## Reconcile an unresolved Manus task
 
@@ -152,7 +152,7 @@ Never test a disclosed key by creating a paid task. If the operator explicitly r
 
 ## Restart, canary, and live acceptance
 
-Installation, registration, authentication, and functional delegation are separate gates. Follow [LIVE_ACCEPTANCE.md](LIVE_ACCEPTANCE.md). Create an operator-controlled evidence root outside the install root and protect its ACL separately, run the installed canary with `--evidence-dir`, retain each required live result as hash-pinned sanitized structured JSON inside that root, and let `npm run evidence:release` generate the paired JSON and Markdown reports. Verify the packet with `npm run evidence:verify`; do not hand-edit an accepted packet.
+Installation, registration, authentication, capability selection, and functional delegation are separate gates. Follow [LIVE_ACCEPTANCE.md](LIVE_ACCEPTANCE.md). Create an operator-controlled evidence root outside the install root and protect its ACL separately, run the installed canary with `--evidence-dir`, retain each required live result as hash-pinned sanitized structured JSON inside that root, and let `npm run evidence:release` derive the profile from the exact shared-config bytes and generate the paired JSON and Markdown reports. Verify the packet with `npm run evidence:verify`; do not hand-edit an accepted packet. Changing enabled agents, remote-egress state/allowlist, the Manus endpoint, or the non-secret account-capability profile changes the config hash and requires a new packet.
 
 The minimum local sequence is:
 
@@ -161,12 +161,12 @@ The minimum local sequence is:
 node "$env:USERPROFILE\.codex\agent-bridge\agent-bridge.mjs" --doctor --json
 ```
 
-Then, from each restarted host, run `diagnose_install`, `list_agents`, and one disposable read-only task for each enabled local backend. Test Manus separately with the durable one-use harness after credential setup:
+Then, from each restarted host, run `diagnose_install`, `list_agents`, and one disposable read-only task for each enabled local backend. Re-export and confirm that the post-cutover profile ID and `profileInputSha256` match the pre-promotion values. For the core profile, the exporter derives and records the capability state from the hash-verified shared config at export time, while the disposable provider-disabled canary independently verifies the exact runtime's adapter-registry rejection behavior; do not claim the canary ran under the shared config. For diagnostic Manus work, use the durable one-use harness after credential setup:
 
 ```powershell
 $env:AGENT_BRIDGE_SERVER_PATH = "$candidate\server\agent-bridge.mjs"
 $env:AGENT_BRIDGE_INSTALL_ROOT = "$env:USERPROFILE\.codex\agent-bridge"
-$env:AGENT_BRIDGE_EXPECTED_VERSION = '0.3.0-rc.8'
+$env:AGENT_BRIDGE_EXPECTED_VERSION = '0.3.0-rc.9'
 $env:AGENT_BRIDGE_EXPECTED_RUNTIME_SHA256 = '<recorded-runtime-sha256>'
 $env:AGENT_BRIDGE_LIVE_REQUIRED = '1'
 npm run test:live:manus -- --evidence-dir 'C:\absolute\durable-evidence-root\manus-live'
@@ -195,6 +195,6 @@ The source-only wrapper never edits client registrations or accepts a live insta
 
 ## Evidence packet
 
-Use [EVIDENCE_CONVENTIONS.md](EVIDENCE_CONVENTIONS.md), [the exporter descriptor example](../examples/evidence-export-descriptor.example.json), [evidence-report.example.json](../examples/evidence-report.example.json), and [evidence-report.example.md](../examples/evidence-report.example.md). The sequence is durable canary output, retained live results, provisional promotion, restarted-client checks, `npm run evidence:release -- --descriptor <absolute-descriptor.json> --output-dir <evidence-root>\<packet-id> --require-accepted`, then `npm run evidence:verify -- --packet-dir <absolute-packet-directory>`. A release is not accepted while any required item is `blocked`, `failed`, `not-run`, or supported only by a claim without a pre-recorded hash and retained artifact.
+Use [EVIDENCE_CONVENTIONS.md](EVIDENCE_CONVENTIONS.md), [the exporter descriptor example](../examples/evidence-export-descriptor.example.json), [evidence-report.example.json](../examples/evidence-report.example.json), and [evidence-report.example.md](../examples/evidence-report.example.md). The sequence is durable canary output, retained live results, provisional promotion, restarted-client checks, `npm run evidence:release -- --descriptor <absolute-descriptor.json> --output-dir <evidence-root>\<packet-id> --require-accepted`, then `npm run evidence:verify -- --packet-dir <absolute-packet-directory>`. A release is accepted only for the profile derived from its exact config and only when every selected item passes. `blocked`, `failed`, `not-run`, profile/config drift, or an asserted check without a pre-recorded hash and retained artifact prevents acceptance; residual risks do not waive selected gates.
 
-Ignored RC5/RC6/RC7 bundles and their `.release-staging` directories are historical artifacts only; never use them as RC8 release inputs.
+Ignored RC5/RC6/RC7/RC8 bundles and their `.release-staging` directories are historical artifacts only; never use them as RC9 release inputs.

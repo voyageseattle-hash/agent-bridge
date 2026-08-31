@@ -42,12 +42,19 @@ test("installed release canary exercises MCP without changing live pointers", as
     assert.equal(result.status, 0, result.stderr);
     const report = JSON.parse(result.stdout);
     assert.equal(report.status, "pass");
+    assert.equal(report.schemaVersion, 2);
     assert.equal(report.version, pkg.version);
     assert.equal(report.runtimeSha256, runtimeHash);
     assert.equal(report.promotionStatus, "drift");
     assert.equal(report.requiredToolCount, 33);
     assert.ok(report.toolCount >= report.requiredToolCount);
     assert.equal(report.providerCount, 0);
+    assert.equal(report.sessionCount, 0);
+    assert.equal(report.approvalCount, 0);
+    assert.deepEqual(report.disabledDelegationChecks, [
+      { agent: "manus", rejected: true, sessionCreated: false, adapterResolutionRejected: true },
+      { agent: "gemini", rejected: true, sessionCreated: false, adapterResolutionRejected: true },
+    ]);
     assert.equal(JSON.parse(await readFile(report.evidencePath, "utf8")).status, "pass");
     assert.equal(await readFile(join(installRoot, "agent-bridge.mjs"), "utf8"), stable.shim);
     assert.equal(await readFile(join(installRoot, "config.json"), "utf8"), stable.config);

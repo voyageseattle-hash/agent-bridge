@@ -1,6 +1,6 @@
 # Live acceptance checklist
 
-Copy this checklist into the release evidence packet. Use `pass`, `fail`, `blocked`, or `not-run`; do not turn an automated pass into a live or visual pass.
+Copy this checklist into the release evidence packet. Use `pass`, `fail`, `blocked`, or `not-run`; do not turn an automated pass into a live or visual pass. For schema v2, the exporter-derived profile—not an operator-selected checklist—determines the required gates.
 
 - [ ] **Durable evidence root:** a new private directory outside the Agent Bridge install root is recorded together with its intended packet ID.
 
@@ -15,6 +15,8 @@ Copy this checklist into the release evidence packet. Use `pass`, `fail`, `block
 - [ ] **Immutable operations integrity:** the exact readiness, cutover, rollback, inspection, registration, lock, and quiescence files are present; their installed hashes and byte counts match release metadata and their bundle bytes.
 - [ ] **Immutable install:** candidate installed to a new `releases\<version+sha7>` directory without changing the live shim.
 - [ ] **Installed MCP canary:** `scripts\canary-release.mjs --evidence-dir <durable-private-directory>` passed against the absolute immutable runtime; its `canary-evidence.json` hash/reference is recorded and source `dist` results are not substituted.
+- [ ] **Capability profile:** a schema-v2 export derives `windows-local-core` or `windows-local-manus` from the exact hash-verified shared config; the descriptor's `expectedProfile` matches but does not select it. RC9 accepts only core.
+- [ ] **Profile binding:** release ID, runtime SHA-256, config SHA-256, a sanitized capability projection (booleans plus remote-allowlist count), and `profileInputSha256` are recorded. Unknown agents, enabled Gemini, disabled Codex/Claude, or ambiguous Manus/remote-egress state are rejected.
 
 ## 2. Passive preflight
 
@@ -30,6 +32,7 @@ Copy this checklist into the release evidence packet. Use `pass`, `fail`, `block
 ## 3. Immutable canary before promotion
 
 - [ ] Provider-disabled artifact canary reports the expected version/runtime hash, all required tools, zero enabled providers, and `drift` or `marker-missing` promotion state.
+- [ ] Fixed inert Manus and Gemini delegations both fail at the disabled adapter registry; the post-attempt record shows zero sessions, zero approvals, zero enabled providers, and no credential/provider/authentication path.
 - [ ] **Installed Windows npm-shim canary:** the absolute immutable runtime, not source `dist`, launches a canonical static npm `.cmd` shim under a path containing spaces; hostile metacharacter arguments are preserved exactly and no injection sentinel is created.
 - [ ] Shim, shared-config, and promotion-marker hashes are identical before and after the artifact canary.
 - [ ] Canary uses a disposable allowed root and state directory.
@@ -43,7 +46,9 @@ Copy this checklist into the release evidence packet. Use `pass`, `fail`, `block
 
 For an accepted disposition, record the installed Windows canary as required `windows-npm-shim-installed-runtime` automated evidence. A source-only `test/win.test.mjs` result does not substitute for this installed-runtime check.
 
-## 4. Manus remote canary
+## 4. Manus capability profile
+
+This section applies to `windows-local-manus`. RC9 recognizes that profile but refuses an accepted export because the current live harness is runtime-bound but not bound to the shared-config profile input. These checks are diagnostic until that contract exists; `blocked`, `not-run`, a service-maintenance note, or an accepted residual risk is not a substitute. Keep Manus disabled for an accepted RC9 release and do not manufacture paid or consequential work. A `windows-local-core` packet must state **“Manus disabled; not live-certified.”**
 
 - [ ] Previously exposed Manus keys are revoked and only the replacement credential-file reference is present, **or** the operator's explicit refusal to rotate is recorded as an accepted residual risk. The refusal does not make credential hygiene pass.
 - [ ] Manus remains disabled until remote-egress policy names the intended root, agent, and data class.
@@ -72,7 +77,7 @@ For an accepted disposition, record the installed Windows canary as required `wi
 - [ ] Public tool output omits the Manus task ID, provider description, and dynamic confirmation schema; a stale revision/event and unsupported decision fail before confirmation POST.
 - [ ] No paid or externally consequential waiting event is manufactured solely for acceptance testing.
 
-For an accepted disposition, record this as required `manus-waiting-action-canary` remote-service evidence. If no safe naturally occurring event occurs, record it `blocked`; do not manufacture a paid or externally consequential event.
+For a future release that accepts `windows-local-manus`, record this as required `manus-waiting-action-canary` remote-service evidence. RC9 refuses accepted export for that profile. If no safe naturally occurring event occurs, record it `blocked`; do not manufacture a paid or externally consequential event.
 
 ## 5. Cooperative creator workflow
 
@@ -102,7 +107,8 @@ For an accepted disposition, record this as required `manus-waiting-action-canar
 - [ ] Claude Code is restarted and passes the same checks.
 - [ ] Claude Desktop is restarted and passes the same checks.
 - [ ] All three report the same runtime identity and shared config hash.
-- [ ] Ignored RC5/RC6/RC7 bundles and their `.release-staging` directories were treated as historical artifacts and were not selected as RC8 promotion inputs.
+- [ ] A fresh post-cutover schema-v2 profile has the same config SHA-256, profile ID, sanitized capability projection, and `profileInputSha256` as the pre-promotion record. Any mismatch invalidates the packet and requires re-acceptance.
+- [ ] Ignored RC5/RC6/RC7/RC8 bundles and their `.release-staging` directories were treated as historical artifacts and were not selected as RC9 promotion inputs.
 
 ## 7. Human creator acceptance
 
@@ -110,7 +116,7 @@ For an accepted disposition, record this as required `manus-waiting-action-canar
 - [ ] Approval prompts expose agent, root, action, data class, expiry, cost, one-time/reusable scope, finalized-prompt SHA-256, and complete approval-envelope SHA-256 before decision.
 - [ ] Failed and blocked states explain the next safe action without hiding evidence.
 - [ ] The creator can pause, resume, cancel, retry within remaining budget, complete, and archive a workboard.
-- [ ] `npm run evidence:release` generated a self-contained sanitized JSON and Markdown evidence packet from the recorded inputs.
+- [ ] `npm run evidence:release` generated a self-contained sanitized JSON and Markdown evidence packet from the recorded inputs; both display the derived profile and disabled/not-certified integrations.
 - [ ] The creator can identify the live release and execute the documented rollback without deleting either release.
 
 ## 8. Final disposition
@@ -119,6 +125,6 @@ For an accepted disposition, record this as required `manus-waiting-action-canar
 
 Record exactly one outcome:
 
-- [ ] **Accepted:** every required gate passed.
-- [ ] **Accepted with explicit residual risks:** deviations are named, bounded, owned, and do not include a stop condition from [THREAT_MATRIX.md](THREAT_MATRIX.md).
+- [ ] **Accepted for the derived capability profile:** every profile-selected gate passed.
+- [ ] **Accepted for the derived capability profile with explicit residual risks:** deviations are named, bounded, owned, do not waive a selected gate, and do not include a stop condition from [THREAT_MATRIX.md](THREAT_MATRIX.md).
 - [ ] **Rejected:** candidate remains unpromoted or is rolled back.

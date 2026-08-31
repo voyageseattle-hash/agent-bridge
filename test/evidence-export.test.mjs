@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import test from "node:test";
 import { exportReleaseEvidence, verifyReleaseEvidence } from "../scripts/export-release-evidence.mjs";
 import { RELEASE_OPERATION_CONTRACT, RELEASE_OPERATION_FILES } from "../scripts/release-operations.mjs";
@@ -32,6 +32,8 @@ test("release evidence exporter verifies identity and creates synchronized immut
     const packet = JSON.parse(packetText);
     const markdown = await readFile(result.markdownPath, "utf8");
     const manifest = JSON.parse(await readFile(result.manifestPath, "utf8"));
+    assert.equal(packet.schemaVersion, 1);
+    assert.equal(Object.hasOwn(packet, "acceptance"), false, "legacy schema-v1 packets must not be reinterpreted with a v2 profile");
     assert.equal(packet.candidate.gitSha, fixture.gitSha);
     assert.equal(packet.candidate.runtimeSha256, fixture.runtimeSha256);
     assert.deepEqual(RELEASE_OPERATION_FILES.map(({ target }) => target), EXPECTED_OPERATION_PATHS);
@@ -136,6 +138,9 @@ test("require-accepted refuses incomplete required gates and accepts complete ga
 
   const acceptedFixture = await createFixture({ accepted: true });
   try {
+    const legacyMarker = JSON.parse(await readFile(join(acceptedFixture.installRoot, "current-release.json"), "utf8"));
+    assert.equal(Object.hasOwn(legacyMarker, "shimSha256"), false);
+    assert.equal(Object.hasOwn(legacyMarker, "configSha256"), false);
     const result = await exportReleaseEvidence({
       descriptorPath: acceptedFixture.descriptorPath,
       outputDir: acceptedFixture.outputDir,
@@ -145,6 +150,306 @@ test("require-accepted refuses incomplete required gates and accepts complete ga
     assert.equal(result.disposition, "accepted-with-residual-risks");
   } finally {
     await acceptedFixture.cleanup();
+  }
+});
+
+test("schema-v2 derives a core profile and accepts without Manus remote gates", async () => {
+  const fixture = await createFixture({ accepted: true, schemaVersion: 2, capabilityProfile: "core" });
+  try {
+    const result = await exportReleaseEvidence({
+      descriptorPath: fixture.descriptorPath,
+      outputDir: fixture.outputDir,
+      requireAccepted: true,
+    });
+    assert.equal(result.acceptanceProfile, "windows-local-core");
+    const report = JSON.parse(await readFile(result.reportPath, "utf8"));
+    assert.equal(report.schemaVersion, 2);
+    assert.equal(report.acceptance.profile, "windows-local-core");
+    assert.equal(report.acceptance.derivation, "hash-verified-shared-config");
+    assert.equal(report.acceptance.capabilities.manusEnabled, false);
+    assert.equal(report.acceptance.capabilities.directRemoteEgressEnabled, false);
+    assert.equal(report.checks.some((check) => check.id === "manus-remote-canary"), false);
+    assert.equal(report.checks.some((check) => check.id === "manus-waiting-action-canary"), false);
+    assert.equal((await verifyReleaseEvidence({ packetDir: fixture.outputDir })).acceptanceProfile, "windows-local-core");
+    await assert.rejects(readFile(join(fixture.installRoot, ".agent-bridge-cutover.lock")), { code: "ENOENT" });
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
+test("accepted export revalidates live marker and shim immediately before final rename", async () => {
+  for (const scenario of ["marker", "shim"]) {
+    const fixture = await createFixture({ accepted: true, schemaVersion: 2, capabilityProfile: "core" });
+    let hookCalls = 0;
+    try {
+      const markerPath = join(fixture.installRoot, "current-release.json");
+      const shimPath = join(fixture.installRoot, "agent-bridge.mjs");
+      await assert.rejects(
+        exportReleaseEvidence(
+          {
+            descriptorPath: fixture.descriptorPath,
+            outputDir: fixture.outputDir,
+            requireAccepted: true,
+          },
+          {
+            testOnlyBeforeFinalLiveBindingCheck: async () => {
+              hookCalls += 1;
+              const cutoverLock = JSON.parse(await readFile(join(fixture.installRoot, ".agent-bridge-cutover.lock"), "utf8"));
+              assert.equal(cutoverLock.schemaVersion, 1);
+              assert.equal(cutoverLock.status, "active");
+              assert.equal(cutoverLock.pid, process.pid);
+              assert.match(cutoverLock.token, /^[a-f0-9]{32}$/);
+              const marker = JSON.parse(await readFile(markerPath, "utf8"));
+              assert.equal(marker.releaseId, fixture.releaseId, "initial accepted binding must pass before fault injection");
+              if (scenario === "marker") {
+                marker.releaseId = "0.3.0-rc.1+abcdef0";
+                await writeFile(markerPath, `${JSON.stringify(marker, null, 2)}\n`);
+                return;
+              }
+              const importLine = `await import(new URL("./releases/${fixture.releaseId}/server/agent-bridge.mjs", import.meta.url).href);\n`;
+              const duplicateShim = `${importLine}${importLine}`;
+              await writeFile(shimPath, duplicateShim);
+              marker.shimSha256 = sha256(Buffer.from(duplicateShim));
+              await writeFile(markerPath, `${JSON.stringify(marker, null, 2)}\n`);
+            },
+          },
+        ),
+        scenario === "marker"
+          ? /promotion marker does not name the candidate/i
+          : /stable shim must contain exactly one recognized release import/i,
+        scenario,
+      );
+      assert.equal(hookCalls, 1, `${scenario} fault injection must occur only after initial acceptance validation`);
+      await assert.rejects(readdir(fixture.outputDir), { code: "ENOENT" });
+      await assert.rejects(readFile(join(fixture.installRoot, ".agent-bridge-cutover.lock")), { code: "ENOENT" });
+      const packetName = basename(fixture.outputDir);
+      const debris = (await readdir(dirname(fixture.outputDir))).filter((name) => (
+        name === `${packetName}.lock` || name.startsWith(`.${packetName}.staging-`)
+      ));
+      assert.deepEqual(debris, [], `${scenario} final-binding failure left export debris`);
+    } finally {
+      await fixture.cleanup();
+    }
+  }
+});
+
+test("accepted export refuses an existing cutover owner and preserves its lock", async () => {
+  const fixture = await createFixture({ accepted: true, schemaVersion: 2, capabilityProfile: "core" });
+  const cutoverLockPath = join(fixture.installRoot, ".agent-bridge-cutover.lock");
+  const foreignOwner = `${JSON.stringify({ schemaVersion: 1, status: "active", pid: 7, token: "a".repeat(32), acquiredAt: "2026-08-13T00:00:00.000Z" })}\n`;
+  try {
+    await writeFile(cutoverLockPath, foreignOwner, { flag: "wx" });
+    await assert.rejects(
+      exportReleaseEvidence({
+        descriptorPath: fixture.descriptorPath,
+        outputDir: fixture.outputDir,
+        requireAccepted: true,
+      }),
+      /another Agent Bridge cutover mutation owns the install lock/i,
+    );
+    assert.equal(await readFile(cutoverLockPath, "utf8"), foreignOwner);
+    await assert.rejects(readdir(fixture.outputDir), { code: "ENOENT" });
+    const packetName = basename(fixture.outputDir);
+    const debris = (await readdir(dirname(fixture.outputDir))).filter((name) => (
+      name === `${packetName}.lock` || name.startsWith(`.${packetName}.staging-`)
+    ));
+    assert.deepEqual(debris, []);
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
+test("accepted export removes a renamed packet when cutover-lock release cannot commit", async () => {
+  const fixture = await createFixture({ accepted: true, schemaVersion: 2, capabilityProfile: "core" });
+  const cutoverLockPath = join(fixture.installRoot, ".agent-bridge-cutover.lock");
+  let hookCalls = 0;
+  try {
+    await assert.rejects(
+      exportReleaseEvidence(
+        {
+          descriptorPath: fixture.descriptorPath,
+          outputDir: fixture.outputDir,
+          requireAccepted: true,
+        },
+        {
+          testOnlyBeforeCutoverLockRelease: async () => {
+            hookCalls += 1;
+            const record = JSON.parse(await readFile(cutoverLockPath, "utf8"));
+            record.token = "b".repeat(32);
+            await writeFile(cutoverLockPath, `${JSON.stringify(record)}\n`);
+          },
+        },
+      ),
+      /publication failed after packet rename; the uncommitted packet was removed/i,
+    );
+    assert.equal(hookCalls, 1);
+    await assert.rejects(readdir(fixture.outputDir), { code: "ENOENT" });
+    assert.equal(JSON.parse(await readFile(cutoverLockPath, "utf8")).token, "b".repeat(32), "uncertain cutover lock must be preserved for manual inspection");
+    const packetName = basename(fixture.outputDir);
+    const debris = (await readdir(dirname(fixture.outputDir))).filter((name) => (
+      name === `${packetName}.lock` || name.startsWith(`.${packetName}.staging-`)
+    ));
+    assert.deepEqual(debris, []);
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
+test("schema-v2 accepted core requires structured disabled-adapter canary evidence", async () => {
+  const fixture = await createFixture({ accepted: true, schemaVersion: 2, capabilityProfile: "core" });
+  try {
+    const descriptor = JSON.parse(await readFile(fixture.descriptorPath, "utf8"));
+    const installed = descriptor.checks.find((check) => check.id === "installed-provider-disabled-canary");
+    installed.evidence = descriptor.checks.find((check) => check.id === "repository-verify").evidence;
+    await writeFile(fixture.descriptorPath, `${JSON.stringify(descriptor, null, 2)}\n`);
+    await assert.rejects(
+      exportReleaseEvidence({ descriptorPath: fixture.descriptorPath, outputDir: fixture.outputDir, requireAccepted: true }),
+      /requires exactly one structured JSON evidence record/i,
+    );
+  } finally {
+    await fixture.cleanup();
+  }
+
+  const mutatedFixture = await createFixture({ accepted: true, schemaVersion: 2, capabilityProfile: "core" });
+  try {
+    const evidence = JSON.parse(await readFile(mutatedFixture.providerDisabledEvidenceSource, "utf8"));
+    evidence.sessionCount = 1;
+    await writeFile(mutatedFixture.providerDisabledEvidenceSource, `${JSON.stringify(evidence, null, 2)}\n`);
+    const descriptor = JSON.parse(await readFile(mutatedFixture.descriptorPath, "utf8"));
+    const installed = descriptor.checks.find((check) => check.id === "installed-provider-disabled-canary");
+    installed.evidence[0].expectedSha256 = sha256(await readFile(mutatedFixture.providerDisabledEvidenceSource));
+    await writeFile(mutatedFixture.descriptorPath, `${JSON.stringify(descriptor, null, 2)}\n`);
+    await assert.rejects(
+      exportReleaseEvidence({ descriptorPath: mutatedFixture.descriptorPath, outputDir: mutatedFixture.outputDir, requireAccepted: true }),
+      /created a session/i,
+    );
+  } finally {
+    await mutatedFixture.cleanup();
+  }
+});
+
+test("schema-v2 core rejects passing disabled-backend claims", async () => {
+  const scenarios = [
+    {
+      name: "Manus run",
+      mutate: (descriptor) => descriptor.agentRuns.push({
+        id: "disabled-manus-run", agent: "manus", boundary: "remote-service", status: "pass",
+        reason: null, sessionRef: "session-disabled-manus", outputCheckId: "repository-verify",
+      }),
+      expected: /disabled Manus profile cannot contain passing Manus agent runs/i,
+    },
+    {
+      name: "Gemini run",
+      mutate: (descriptor) => descriptor.agentRuns.push({
+        id: "disabled-gemini-run", agent: "gemini", boundary: "local-cli", status: "pass",
+        reason: null, sessionRef: "session-disabled-gemini", outputCheckId: "repository-verify",
+      }),
+      expected: /disabled Gemini profile cannot contain passing Gemini agent runs/i,
+    },
+    {
+      name: "Manus check",
+      mutate: (descriptor) => descriptor.checks.push({
+        ...structuredClone(descriptor.checks.find((check) => check.id === "repository-verify")),
+        id: "manus-shadow-proof",
+      }),
+      expected: /disabled Manus profile cannot contain passing Manus checks/i,
+    },
+  ];
+  for (const scenario of scenarios) {
+    const fixture = await createFixture({ accepted: true, schemaVersion: 2, capabilityProfile: "core" });
+    try {
+      const descriptor = JSON.parse(await readFile(fixture.descriptorPath, "utf8"));
+      scenario.mutate(descriptor);
+      await writeFile(fixture.descriptorPath, `${JSON.stringify(descriptor, null, 2)}\n`);
+      await assert.rejects(
+        exportReleaseEvidence({ descriptorPath: fixture.descriptorPath, outputDir: fixture.outputDir, requireAccepted: true }),
+        scenario.expected,
+        scenario.name,
+      );
+    } finally {
+      await fixture.cleanup();
+    }
+  }
+});
+
+test("schema-v2 expected profile is a guard and cannot downgrade the derived profile", async () => {
+  const fixture = await createFixture({ schemaVersion: 2, capabilityProfile: "manus" });
+  try {
+    const descriptor = JSON.parse(await readFile(fixture.descriptorPath, "utf8"));
+    descriptor.acceptancePolicy.expectedProfile = "windows-local-core";
+    await writeFile(fixture.descriptorPath, `${JSON.stringify(descriptor, null, 2)}\n`);
+    await assert.rejects(
+      exportReleaseEvidence({ descriptorPath: fixture.descriptorPath, outputDir: fixture.outputDir }),
+      /expected profile windows-local-core differs from derived profile windows-local-manus/i,
+    );
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
+test("schema-v2 Manus profile keeps both remote-service gates mandatory and refuses unbound acceptance", async () => {
+  const missingFixture = await createFixture({ accepted: true, schemaVersion: 2, capabilityProfile: "manus" });
+  try {
+    const descriptor = JSON.parse(await readFile(missingFixture.descriptorPath, "utf8"));
+    descriptor.checks = descriptor.checks.filter((check) => check.id !== "manus-waiting-action-canary");
+    await writeFile(missingFixture.descriptorPath, `${JSON.stringify(descriptor, null, 2)}\n`);
+    await assert.rejects(
+      exportReleaseEvidence({ descriptorPath: missingFixture.descriptorPath, outputDir: missingFixture.outputDir, requireAccepted: true }),
+      /manus-waiting-action-canary/i,
+    );
+  } finally {
+    await missingFixture.cleanup();
+  }
+
+  const acceptedFixture = await createFixture({ accepted: true, schemaVersion: 2, capabilityProfile: "manus" });
+  try {
+    await assert.rejects(
+      exportReleaseEvidence({
+        descriptorPath: acceptedFixture.descriptorPath,
+        outputDir: acceptedFixture.outputDir,
+        requireAccepted: true,
+      }),
+      /cannot accept the windows-local-manus profile until Manus live-canary artifacts are bound/i,
+    );
+  } finally {
+    await acceptedFixture.cleanup();
+  }
+});
+
+test("schema-v2 fails closed on invalid, unsupported, or ambiguous capability state", async () => {
+  for (const capabilityProfile of ["invalid-schema", "gemini", "ambiguous-remote"]) {
+    const fixture = await createFixture({ schemaVersion: 2, capabilityProfile });
+    try {
+      await assert.rejects(
+        exportReleaseEvidence({ descriptorPath: fixture.descriptorPath, outputDir: fixture.outputDir }),
+        capabilityProfile === "invalid-schema"
+          ? /fails the RC9 release schema.*allowedRoots/i
+          : capabilityProfile === "gemini"
+            ? /no acceptance profile supports enabled Gemini/i
+            : /capability state is ambiguous/i,
+      );
+    } finally {
+      await fixture.cleanup();
+    }
+  }
+});
+
+test("schema-v2 verifier rejects a self-rehashed unsupported profile", async () => {
+  const fixture = await createFixture({ schemaVersion: 2, capabilityProfile: "core" });
+  try {
+    await exportReleaseEvidence({ descriptorPath: fixture.descriptorPath, outputDir: fixture.outputDir });
+    const reportPath = join(fixture.outputDir, "evidence-report.json");
+    const manifestPath = join(fixture.outputDir, "manifest.json");
+    const report = JSON.parse(await readFile(reportPath, "utf8"));
+    report.acceptance.profile = "operator-selected-downgrade";
+    const reportBytes = Buffer.from(`${JSON.stringify(report, null, 2)}\n`);
+    await writeFile(reportPath, reportBytes);
+    const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+    manifest.files["evidence-report.json"] = { sha256: sha256(reportBytes), bytes: reportBytes.byteLength };
+    await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
+    await assert.rejects(verifyReleaseEvidence({ packetDir: fixture.outputDir }), /acceptance profile is unsupported/i);
+  } finally {
+    await fixture.cleanup();
   }
 });
 
@@ -327,7 +632,7 @@ test("accepted export requires the promoted marker and every named client gate",
     await writeFile(join(shimFixture.installRoot, "agent-bridge.mjs"), `// ./releases/${shimFixture.releaseId}/server/agent-bridge.mjs\nawait import(new URL("./releases/${wrongRelease}/server/agent-bridge.mjs", import.meta.url).href);\n`);
     await assert.rejects(
       exportReleaseEvidence({ descriptorPath: shimFixture.descriptorPath, outputDir: shimFixture.outputDir, requireAccepted: true }),
-      /stable shim runtime does not exist/i,
+      /promotion marker shim hash differs|stable shim runtime does not exist/i,
     );
   } finally {
     await shimFixture.cleanup();
@@ -546,7 +851,7 @@ test("descriptor narratives are sanitized and escaped before JSON and Markdown e
   }
 });
 
-async function createFixture({ accepted = false } = {}) {
+async function createFixture({ accepted = false, schemaVersion = 1, capabilityProfile = schemaVersion === 2 ? "core" : "legacy" } = {}) {
   const root = await mkdtemp(join(tmpdir(), "agent-bridge-evidence-export-test-"));
   const installRoot = join(root, "install");
   const version = "0.3.0-rc.2";
@@ -569,7 +874,38 @@ async function createFixture({ accepted = false } = {}) {
     relative: target,
     bytes: Buffer.from(`# immutable operation ${index + 1}: ${target}\n`),
   }));
-  const config = Buffer.from("{\"agents\":{}}\n");
+  const capabilityConfigs = {
+    legacy: { agents: {} },
+    "invalid-schema": {
+      agents: { codex: { enabled: true }, claude: { enabled: true }, gemini: { enabled: false }, manus: { enabled: false } },
+      policy: { remoteEgress: { enabled: false, allowedAgents: [] } },
+    },
+    core: {
+      agents: { codex: { enabled: true }, claude: { enabled: true }, gemini: { enabled: false }, manus: { enabled: false } },
+      allowedRoots: [root],
+      policy: { remoteEgress: { enabled: false, allowedAgents: [], allowedRoots: [], allowedDataClasses: [] } },
+    },
+    manus: {
+      agents: {
+        codex: { enabled: true }, claude: { enabled: true }, gemini: { enabled: false },
+        manus: { enabled: true, acknowledgeAccountDefaultCapabilities: true, accountCapabilityProfile: "reviewed-test-profile" },
+      },
+      allowedRoots: [root],
+      policy: { remoteEgress: { enabled: true, allowedAgents: ["manus"], allowedRoots: [root], allowedDataClasses: ["public"] } },
+    },
+    gemini: {
+      agents: { codex: { enabled: true }, claude: { enabled: true }, gemini: { enabled: true }, manus: { enabled: false } },
+      allowedRoots: [root],
+      policy: { remoteEgress: { enabled: false, allowedAgents: [], allowedRoots: [], allowedDataClasses: [] } },
+    },
+    "ambiguous-remote": {
+      agents: { codex: { enabled: true }, claude: { enabled: true }, gemini: { enabled: false }, manus: { enabled: false } },
+      allowedRoots: [root],
+      policy: { remoteEgress: { enabled: true, allowedAgents: ["manus"], allowedRoots: [root], allowedDataClasses: ["public"] } },
+    },
+  };
+  assert.ok(Object.hasOwn(capabilityConfigs, capabilityProfile), `unknown fixture capability profile ${capabilityProfile}`);
+  const config = Buffer.from(`${JSON.stringify(capabilityConfigs[capabilityProfile])}\n`);
   const runtimeSha256 = sha256(runtime);
   const payloads = [
     { relative: "server/agent-bridge.mjs", bytes: runtime },
@@ -612,6 +948,32 @@ async function createFixture({ accepted = false } = {}) {
   })}\n`);
   const sourceEvidenceSha256 = sha256(await readFile(evidenceSource));
   const jsonEvidenceSha256 = sha256(await readFile(jsonEvidenceSource));
+  const providerDisabledEvidenceSource = join(evidenceRoot, "installed-provider-disabled-canary.json");
+  const stableFiles = { shim: "a".repeat(64), config: "b".repeat(64), marker: "c".repeat(64) };
+  await writeFile(providerDisabledEvidenceSource, `${JSON.stringify({
+    schemaVersion: 2,
+    status: "pass",
+    releasePath,
+    runtimePath,
+    version,
+    runtimeSha256,
+    serverVersion: { name: "agent-bridge", version },
+    entrypoint: "runtime",
+    profile: "strict",
+    expectedPromotion: "unpromoted",
+    promotionStatus: "drift",
+    localPromotion: { status: "drift", current: false, hashes: stableFiles },
+    providerCount: 0,
+    sessionCount: 0,
+    approvalCount: 0,
+    disabledDelegationChecks: [
+      { agent: "manus", rejected: true, sessionCreated: false, adapterResolutionRejected: true },
+      { agent: "gemini", rejected: true, sessionCreated: false, adapterResolutionRejected: true },
+    ],
+    budget: { enabled: false },
+    stableFilesBefore: stableFiles,
+    stableFilesAfter: stableFiles,
+  }, null, 2)}\n`);
   const passCheck = (id, gate) => ({
     id,
     gate,
@@ -636,8 +998,7 @@ async function createFixture({ accepted = false } = {}) {
     exitCode: 0,
     evidence: [{ id: "json-log", path: jsonEvidenceSource, mediaType: "application/json", dataClass: "internal", expectedSha256: jsonEvidenceSha256 }],
   };
-  const checks = accepted
-    ? [
+  const acceptedChecks = [
         passCheck("repository-verify", "automated"),
         passCheck("production-dependency-audit", "automated"),
         passCheck("mcpb-manifest-validation", "automated"),
@@ -656,7 +1017,22 @@ async function createFixture({ accepted = false } = {}) {
         passCheck("creator-visible-acceptance", "human-visible"),
         passCheck("rollback-canary", "automated"),
         jsonCheck,
-      ]
+      ];
+  if (schemaVersion === 2) {
+    const installedCanary = acceptedChecks.find((check) => check.id === "installed-provider-disabled-canary");
+    installedCanary.command = "node scripts/canary-release.mjs --profile strict";
+    installedCanary.evidence = [{
+      id: "installed-provider-disabled-canary-result",
+      path: providerDisabledEvidenceSource,
+      mediaType: "application/json",
+      dataClass: "internal",
+      expectedSha256: sha256(await readFile(providerDisabledEvidenceSource)),
+    }];
+  }
+  const checks = accepted
+    ? (schemaVersion === 2 && capabilityProfile === "core"
+        ? acceptedChecks.filter((check) => !["manus-remote-canary", "manus-waiting-action-canary"].includes(check.id))
+        : acceptedChecks)
     : [
         passCheck("repository-verify", "automated"),
         jsonCheck,
@@ -674,9 +1050,16 @@ async function createFixture({ accepted = false } = {}) {
         },
       ];
   const descriptor = {
-    schemaVersion: 1,
+    schemaVersion,
     packetId,
     evidenceRoot,
+    ...(schemaVersion === 2 ? {
+      acceptancePolicy: {
+        schemaVersion: 1,
+        derivation: "hash-verified-shared-config",
+        expectedProfile: capabilityProfile === "manus" ? "windows-local-manus" : "windows-local-core",
+      },
+    } : {}),
     sanitization: {
       method: "Replaced private path prefixes and secret-shaped values; omitted prompts and transcripts.",
       redactions: [{ path: "C:\\Users\\Test Creator\\project", replacement: "<workspace>" }],
@@ -722,20 +1105,22 @@ async function createFixture({ accepted = false } = {}) {
     descriptor.rollback.priorRuntimeSha256 = sha256(await readFile(priorRuntimePath));
     const backupPath = join(installRoot, "backups", "prior");
     await mkdir(backupPath, { recursive: true });
+    const shim = `await import(new URL("./releases/${releaseId}/server/agent-bridge.mjs", import.meta.url).href);\n`;
     await writeFile(join(installRoot, "current-release.json"), `${JSON.stringify({
       schemaVersion: 1,
       releaseId,
       releasePath,
       runtimeSha256,
+      ...(schemaVersion === 2 ? { shimSha256: sha256(Buffer.from(shim)), configSha256: sha256(config) } : {}),
       promotedAt: "2026-08-13T00:00:00.000Z",
       backupPath,
     }, null, 2)}\n`);
-    await writeFile(join(installRoot, "agent-bridge.mjs"), `await import(new URL("./releases/${releaseId}/server/agent-bridge.mjs", import.meta.url).href);\n`);
+    await writeFile(join(installRoot, "agent-bridge.mjs"), shim);
   }
   await writeFile(descriptorPath, `${JSON.stringify(descriptor, null, 2)}\n`);
   return {
     root, installRoot, releasePath, bundlePath, descriptorPath, outputDir, gitSha, runtimeSha256,
-    sourceMap, operations, bundleEntries, releaseId,
+    sourceMap, operations, bundleEntries, releaseId, providerDisabledEvidenceSource,
     cleanup: () => rm(root, { recursive: true, force: true }),
   };
 }

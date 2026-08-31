@@ -6,7 +6,7 @@ import { dirname, join, resolve } from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 import test from "node:test";
 
-const VERSION = "0.3.0-rc.8";
+const VERSION = "0.3.0-rc.9";
 const OPERATION_SOURCES = [
   "check-cutover-readiness.ps1",
   "cutover-release.ps1",

@@ -16,8 +16,10 @@ import {
   unlink,
 } from "node:fs/promises";
 import { existsSync } from "node:fs";
-import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { homedir } from "node:os";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
+import { z } from "zod";
 import { RELEASE_OPERATION_CONTRACT, RELEASE_OPERATION_FILES } from "./release-operations.mjs";
 
 const SHA256 = /^[a-f0-9]{64}$/;
@@ -39,7 +41,7 @@ const DISPOSITIONS = new Set([
   "accepted-with-residual-risks",
   "rejected",
 ]);
-const ACCEPTANCE_PROFILE = Object.freeze([
+const LEGACY_ACCEPTANCE_PROFILE = Object.freeze([
   ["repository-verify", "automated"],
   ["production-dependency-audit", "automated"],
   ["mcpb-manifest-validation", "automated"],
@@ -58,20 +60,102 @@ const ACCEPTANCE_PROFILE = Object.freeze([
   ["creator-visible-acceptance", "human-visible"],
   ["rollback-canary", "automated"],
 ]);
+const CORE_ACCEPTANCE_PROFILE = Object.freeze([
+  ["repository-verify", "automated"],
+  ["production-dependency-audit", "automated"],
+  ["mcpb-manifest-validation", "automated"],
+  ["immutable-operations-integrity", "automated"],
+  ["installed-provider-disabled-canary", "automated"],
+  ["windows-npm-shim-installed-runtime", "automated"],
+  ["codex-installed-runtime", "local-cli"],
+  ["claude-installed-runtime", "local-cli"],
+  ["registration-normalization", "client-restart"],
+  ["release-promotion", "client-restart"],
+  ["codex-restarted-client", "client-restart"],
+  ["claude-code-restarted-client", "client-restart"],
+  ["claude-desktop-restarted-client", "client-restart"],
+  ["creator-visible-acceptance", "human-visible"],
+  ["rollback-canary", "automated"],
+]);
+const ACCEPTANCE_PROFILES = Object.freeze({
+  "windows-local-core": CORE_ACCEPTANCE_PROFILE,
+  "windows-local-manus": LEGACY_ACCEPTANCE_PROFILE,
+});
+const SANDBOX_MODES = ["read-only", "workspace-write", "full-access"];
+const DATA_CLASSIFICATIONS = ["public", "internal", "confidential", "restricted"];
+const RELEASE_AGENT_SCHEMA = z.object({
+  enabled: z.boolean().optional(),
+  bin: z.string().min(1).optional(),
+  defaultModel: z.string().min(1).optional(),
+  extraArgs: z.array(z.string()).optional(),
+  extraEnv: z.record(z.string()).optional(),
+  credentialFile: z.string().min(1).optional(),
+  baseUrl: z.string().url().optional(),
+  allowDevelopmentBaseUrl: z.boolean().optional(),
+  acknowledgeAccountDefaultCapabilities: z.boolean().optional(),
+  accountCapabilityProfile: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/).optional(),
+  sandboxCeiling: z.enum(SANDBOX_MODES).optional(),
+}).strict();
+const RELEASE_CONFIG_SCHEMA = z.object({
+  agents: z.record(RELEASE_AGENT_SCHEMA).optional(),
+  defaults: z.object({
+    timeoutSec: z.number().int().positive().max(7200).optional(),
+    sandbox: z.enum(SANDBOX_MODES).optional(),
+    cwd: z.string().min(1).optional(),
+  }).strict().optional(),
+  allowedRoots: z.array(z.string().min(1)).min(1),
+  policy: z.object({
+    sandboxCeiling: z.enum(SANDBOX_MODES).optional(),
+    remoteEgress: z.object({
+      enabled: z.boolean().optional(),
+      allowedAgents: z.array(z.string().min(1)).max(32).optional(),
+      allowedRoots: z.array(z.string().min(1)).max(64).optional(),
+      allowedDataClasses: z.array(z.enum(DATA_CLASSIFICATIONS)).max(DATA_CLASSIFICATIONS.length).optional(),
+    }).strict().optional(),
+    cumulativeRemoteCost: z.object({
+      currency: z.literal("USD"),
+      maxReservedCents: z.number().int().min(1).max(100_000_000_000),
+    }).strict().optional(),
+  }).strict().optional(),
+  handoffMaxChars: z.number().int().min(1000).max(1_000_000).optional(),
+  stateDir: z.string().min(1).optional(),
+  sessionLockWaitMs: z.number().int().min(0).max(300_000).optional(),
+  sessionLockStaleMs: z.number().int().min(60_000).max(86_400_000).optional(),
+  _notes: z.unknown().optional(),
+}).strict();
 
-export async function exportReleaseEvidence({ descriptorPath, outputDir, requireAccepted = false }) {
+export async function exportReleaseEvidence(
+  { descriptorPath, outputDir, requireAccepted = false },
+  { testOnlyBeforeFinalLiveBindingCheck, testOnlyBeforeCutoverLockRelease } = {},
+) {
+  assert.ok(
+    testOnlyBeforeFinalLiveBindingCheck === undefined || typeof testOnlyBeforeFinalLiveBindingCheck === "function",
+    "testOnlyBeforeFinalLiveBindingCheck must be a function when provided",
+  );
+  assert.ok(
+    testOnlyBeforeCutoverLockRelease === undefined || typeof testOnlyBeforeCutoverLockRelease === "function",
+    "testOnlyBeforeCutoverLockRelease must be a function when provided",
+  );
   const descriptorFile = await requireRegularFile(descriptorPath, "descriptor");
   const descriptor = JSON.parse(await readFile(descriptorFile, "utf8"));
   validateDescriptor(descriptor);
 
-  const candidate = await verifyCandidate(descriptor.candidate);
+  const candidate = await verifyCandidate(descriptor.candidate, descriptor.schemaVersion);
+  if (descriptor.schemaVersion === 2) {
+    assert.equal(
+      descriptor.acceptancePolicy.expectedProfile,
+      candidate.acceptance.profile,
+      `descriptor expected profile ${descriptor.acceptancePolicy.expectedProfile} differs from derived profile ${candidate.acceptance.profile}`,
+    );
+    assertNoContradictoryCapabilityClaims(descriptor, candidate.acceptance);
+  }
   const evidenceRoot = await requireDirectory(descriptor.evidenceRoot, "descriptor.evidenceRoot");
   assert.ok(!isInsideOrEqual(candidate.installRoot, evidenceRoot), "descriptor.evidenceRoot must be outside the Agent Bridge install root");
   assert.ok(isInsideOrEqual(evidenceRoot, descriptorFile), "descriptor file must be contained by descriptor.evidenceRoot");
   const output = requiredAbsolutePath(outputDir, "output-dir");
   assert.equal(basename(output), descriptor.packetId, "--output-dir basename must equal descriptor.packetId so packet identities cannot be silently reused");
   await validateNewOutputDirectory(output, candidate.installRoot, evidenceRoot);
-  if (requireAccepted) await assertAccepted(descriptor, candidate);
+  if (requireAccepted) await assertAccepted(descriptor, candidate, evidenceRoot);
 
   const parent = dirname(output);
   const staging = join(parent, `.${basename(output)}.staging-${randomUUID()}`);
@@ -79,6 +163,7 @@ export async function exportReleaseEvidence({ descriptorPath, outputDir, require
   const lockToken = randomUUID();
   let lockHandle;
   let lockOwned = false;
+  let cutoverLock = null;
   let staged = false;
   try {
     lockHandle = await open(lockPath, "wx", 0o600);
@@ -119,9 +204,41 @@ export async function exportReleaseEvidence({ descriptorPath, outputDir, require
     await syncDirectory(staging);
     assert.ok(!existsSync(output), `refusing destination created during export: ${output}`);
     assert.ok(samePath(await realpath(parent), parent), "output parent identity changed during export");
+    if (requireAccepted) {
+      cutoverLock = await acquireAcceptedExportCutoverLock(candidate.installRoot);
+      if (testOnlyBeforeFinalLiveBindingCheck) await testOnlyBeforeFinalLiveBindingCheck();
+      await verifyAcceptedLiveBinding(descriptor.schemaVersion, candidate);
+    } else {
+      if (testOnlyBeforeFinalLiveBindingCheck) await testOnlyBeforeFinalLiveBindingCheck();
+      await verifySharedConfigBinding(candidate);
+    }
     await rename(staging, output);
     staged = false;
-    await syncDirectory(parent);
+    try {
+      await syncDirectory(parent);
+      if (cutoverLock) {
+        if (testOnlyBeforeCutoverLockRelease) await testOnlyBeforeCutoverLockRelease();
+        await releaseAcceptedExportCutoverLock(cutoverLock);
+        cutoverLock = null;
+      }
+    } catch (error) {
+      if (cutoverLock) {
+        const uncertainLock = cutoverLock;
+        cutoverLock = null;
+        await releaseAcceptedExportCutoverLock(uncertainLock).catch(() => {});
+      }
+      let removalError = null;
+      try {
+        await rm(output, { recursive: true, force: true });
+      } catch (candidateRemovalError) {
+        removalError = candidateRemovalError;
+      }
+      if (removalError || existsSync(output)) {
+        throw new Error(`release evidence publication failed after packet rename and the uncommitted packet could not be removed: ${removalError?.message ?? error.message}`);
+      }
+      await syncDirectory(parent).catch(() => {});
+      throw new Error(`release evidence publication failed after packet rename; the uncommitted packet was removed: ${error.message}`);
+    }
     return {
       status: requireAccepted ? "accepted" : "exported",
       disposition: packet.disposition,
@@ -132,6 +249,7 @@ export async function exportReleaseEvidence({ descriptorPath, outputDir, require
       manifestPath: join(output, "manifest.json"),
       reportSha256: jsonHash,
       artifactCount: artifacts.length,
+      acceptanceProfile: candidate.acceptance?.profile ?? "legacy-windows-manus-required",
     };
   } finally {
     if (staged) await rm(staging, { recursive: true, force: true });
@@ -143,6 +261,7 @@ export async function exportReleaseEvidence({ descriptorPath, outputDir, require
         if (record.token === lockToken) await unlink(lockPath).catch(() => {});
       }
     }
+    if (cutoverLock) await releaseAcceptedExportCutoverLock(cutoverLock);
   }
 }
 
@@ -186,17 +305,22 @@ export async function verifyReleaseEvidence({ packetDir }) {
   assert.deepEqual(artifactEntries.map((entry) => entry.name).sort(), artifactNames, "packet artifacts directory has missing or unmanifested entries");
   assert.ok(artifactEntries.every((entry) => entry.isFile() && !entry.isSymbolicLink()), "packet artifacts must be regular non-link files");
   const report = JSON.parse(await readFile(join(packetPath, "evidence-report.json"), "utf8"));
-  exactObject(report, [
+  assert.ok(report !== null && typeof report === "object" && !Array.isArray(report), "evidence report must be an object");
+  assert.ok([1, 2].includes(report.schemaVersion), "evidence report schemaVersion must be 1 or 2");
+  const reportKeys = [
     "schemaVersion", "packetId", "createdAt", "sanitization", "candidate", "checks", "approvals",
     "agentRuns", "recommendations", "workboard", "budget", "residualRisks", "rollback", "disposition",
-  ], "evidence report");
-  assert.equal(report.schemaVersion, 1, "evidence report schemaVersion must be 1");
+  ];
+  if (report.schemaVersion === 2) reportKeys.splice(4, 0, "acceptance");
+  exactObject(report, reportKeys, "evidence report");
+  if (report.schemaVersion === 2) validateAcceptanceReport(report.acceptance, report.candidate);
   assert.equal(report.packetId, manifest.packetId, "evidence report packetId differs from manifest");
   assert.equal(report.createdAt, manifest.createdAt, "evidence report timestamp differs from manifest");
   assert.ok(DISPOSITIONS.has(report.disposition), "evidence report disposition is invalid");
   const markdown = await readFile(join(packetPath, "evidence-report.md"), "utf8");
   assert.ok(markdown.includes(`\`${manifest.packetId}\``), "Markdown report omits the packet ID");
   assert.ok(markdown.includes(`\`${manifest.files["evidence-report.json"].sha256}\``), "Markdown report omits the JSON report hash");
+  if (report.schemaVersion === 2) assert.ok(markdown.includes(`\`${report.acceptance.profile}\``), "Markdown report omits the derived acceptance profile");
   return {
     status: "verified",
     packetId: manifest.packetId,
@@ -204,15 +328,25 @@ export async function verifyReleaseEvidence({ packetDir }) {
     packetDir: packetPath,
     fileCount: names.length + 1,
     reportSha256: manifest.files["evidence-report.json"].sha256,
+    acceptanceProfile: report.acceptance?.profile ?? "legacy-windows-manus-required",
   };
 }
 
 function validateDescriptor(value) {
-  exactObject(value, [
+  assert.ok(value !== null && typeof value === "object" && !Array.isArray(value), "descriptor must be an object");
+  assert.ok([1, 2].includes(value.schemaVersion), "descriptor.schemaVersion must be 1 or 2");
+  const descriptorKeys = [
     "schemaVersion", "packetId", "evidenceRoot", "sanitization", "candidate", "checks", "approvals",
     "agentRuns", "recommendations", "workboard", "budget", "residualRisks", "rollback", "disposition",
-  ], "descriptor");
-  assert.equal(value.schemaVersion, 1, "descriptor.schemaVersion must be 1");
+  ];
+  if (value.schemaVersion === 2) descriptorKeys.splice(3, 0, "acceptancePolicy");
+  exactObject(value, descriptorKeys, "descriptor");
+  if (value.schemaVersion === 2) {
+    exactObject(value.acceptancePolicy, ["schemaVersion", "derivation", "expectedProfile"], "descriptor.acceptancePolicy");
+    assert.equal(value.acceptancePolicy.schemaVersion, 1, "descriptor.acceptancePolicy.schemaVersion must be 1");
+    assert.equal(value.acceptancePolicy.derivation, "hash-verified-shared-config", "descriptor.acceptancePolicy.derivation is unsupported");
+    assert.ok(Object.hasOwn(ACCEPTANCE_PROFILES, value.acceptancePolicy.expectedProfile), "descriptor.acceptancePolicy.expectedProfile is unsupported");
+  }
   safeId(value.packetId, "descriptor.packetId");
   requiredAbsolutePath(value.evidenceRoot, "descriptor.evidenceRoot");
   assert.ok(DISPOSITIONS.has(value.disposition), "descriptor.disposition is invalid");
@@ -366,7 +500,7 @@ function validateRollback(value) {
   assert.ok(STATUSES.has(value.canaryStatus), "rollback.canaryStatus is invalid");
 }
 
-async function verifyCandidate(value) {
+async function verifyCandidate(value, descriptorSchemaVersion) {
   const installRoot = await requireDirectory(value.installRoot, "candidate.installRoot");
   const releasePath = await requireDirectory(value.releasePath, "candidate.releasePath");
   const expectedReleasePath = join(installRoot, "releases", value.releaseId);
@@ -422,13 +556,144 @@ async function verifyCandidate(value) {
   }
   const configPath = await requireRegularFile(value.configPath, "shared config");
   assert.ok(samePath(configPath, join(installRoot, "config.json")), "candidate.configPath must be the shared config directly under installRoot");
-  assert.equal(sha256(await readFile(configPath)), value.configSha256, "shared config hash differs from descriptor");
+  const configBytes = await readFile(configPath);
+  assert.equal(sha256(configBytes), value.configSha256, "shared config hash differs from descriptor");
+  const acceptance = descriptorSchemaVersion === 2
+    ? await deriveAcceptanceFromConfig(configBytes, value)
+    : null;
   const operations = RELEASE_OPERATION_FILES.map(({ target }) => ({
     path: target,
     bytes: installedPayloads.get(target).bytes.byteLength,
     sha256: installedPayloads.get(target).sha256,
   }));
-  return { ...value, installRoot, releasePath, runtimePath, bundlePath, bundleBytes: bundle.byteLength, configPath, operations };
+  return { ...value, installRoot, releasePath, runtimePath, bundlePath, bundleBytes: bundle.byteLength, configPath, operations, acceptance };
+}
+
+async function deriveAcceptanceFromConfig(configBytes, candidate) {
+  let config;
+  try { config = JSON.parse(configBytes.toString("utf8")); }
+  catch (error) { throw new Error(`shared config is invalid JSON: ${error.message}`); }
+  const parsed = RELEASE_CONFIG_SCHEMA.safeParse(config);
+  if (!parsed.success) throw new Error(`shared config fails the RC9 release schema mirrored from the runtime config contract: ${parsed.error.issues.map((issue) => `${issue.path.join(".") || "root"}: ${issue.message}`).join("; ")}`);
+  config = parsed.data;
+  const agents = config.agents ?? {};
+  for (const [id, agent] of Object.entries(agents)) {
+    if (agent.allowDevelopmentBaseUrl && id !== "manus") throw new Error(`shared config agent ${id}.allowDevelopmentBaseUrl is only valid for Manus`);
+    if (agent.acknowledgeAccountDefaultCapabilities !== undefined && id !== "manus") throw new Error(`shared config agent ${id}.acknowledgeAccountDefaultCapabilities is only valid for Manus`);
+    if (agent.accountCapabilityProfile !== undefined && id !== "manus") throw new Error(`shared config agent ${id}.accountCapabilityProfile is only valid for Manus`);
+    if (id === "manus" && agent.acknowledgeAccountDefaultCapabilities === true && !agent.accountCapabilityProfile) {
+      throw new Error("shared config agents.manus.accountCapabilityProfile is required when account-default capabilities are acknowledged");
+    }
+    if (id === "manus" && agent.baseUrl) validateManusBaseUrl(agent.baseUrl, agent.allowDevelopmentBaseUrl === true);
+  }
+  const allowedRoots = [];
+  for (const [index, root] of config.allowedRoots.entries()) allowedRoots.push(await canonicalConfigDirectory(root, `shared config allowedRoots[${index}]`));
+  if (config.defaults?.cwd) {
+    const cwd = await canonicalConfigDirectory(config.defaults.cwd, "shared config defaults.cwd");
+    assert.ok(allowedRoots.some((root) => isInsideOrEqual(root, cwd)), "shared config defaults.cwd is outside allowedRoots");
+  }
+  const configuredSandbox = config.defaults?.sandbox ?? "read-only";
+  const configuredCeiling = config.policy?.sandboxCeiling ?? "workspace-write";
+  assert.ok(SANDBOX_MODES.indexOf(configuredSandbox) <= SANDBOX_MODES.indexOf(configuredCeiling), "shared config defaults.sandbox exceeds policy.sandboxCeiling");
+  const enabled = (id, fallback) => agents[id]?.enabled ?? fallback;
+  const codexEnabled = enabled("codex", true);
+  const claudeEnabled = enabled("claude", true);
+  const geminiEnabled = enabled("gemini", false);
+  const manusEnabled = enabled("manus", false);
+  const unknownEnabledAgents = Object.entries(agents)
+    .filter(([id, agent]) => !["codex", "claude", "gemini", "manus"].includes(id) && agent.enabled !== false)
+    .map(([id]) => id);
+  assert.deepEqual(unknownEnabledAgents, [], `no acceptance profile supports enabled unknown agents: ${unknownEnabledAgents.join(", ")}`);
+  assert.equal(codexEnabled, true, "no acceptance profile supports disabled Codex");
+  assert.equal(claudeEnabled, true, "no acceptance profile supports disabled Claude");
+  assert.equal(geminiEnabled, false, "no acceptance profile supports enabled Gemini");
+
+  const policy = config.policy ?? {};
+  const remote = policy.remoteEgress ?? {};
+  const directRemoteEgressEnabled = remote.enabled ?? false;
+  const allowedAgents = remote.allowedAgents ?? [];
+  const uniqueAllowedAgents = [...new Set(allowedAgents)];
+  const manusRemoteAllowed = uniqueAllowedAgents.includes("manus");
+  const remoteRoots = [];
+  for (const [index, root] of (remote.allowedRoots ?? []).entries()) {
+    const canonical = await canonicalConfigDirectory(root, `shared config policy.remoteEgress.allowedRoots[${index}]`);
+    assert.ok(allowedRoots.some((allowedRoot) => isInsideOrEqual(allowedRoot, canonical)), `shared config remote allowed root ${index} is outside allowedRoots`);
+    remoteRoots.push(canonical);
+  }
+  if (directRemoteEgressEnabled) {
+    assert.ok(uniqueAllowedAgents.length > 0, "shared config remote egress requires allowedAgents");
+    assert.ok(remoteRoots.length > 0, "shared config remote egress requires allowedRoots");
+    assert.ok((remote.allowedDataClasses ?? []).length > 0, "shared config remote egress requires allowedDataClasses");
+  }
+  const manusAgent = agents.manus ?? {};
+  const manusAccountCapabilitiesAcknowledged = manusAgent.acknowledgeAccountDefaultCapabilities === true;
+  const manusAccountProfileConfigured = typeof manusAgent.accountCapabilityProfile === "string" && /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(manusAgent.accountCapabilityProfile);
+
+  let profile;
+  if (!manusEnabled && !directRemoteEgressEnabled && uniqueAllowedAgents.length === 0) {
+    profile = "windows-local-core";
+  } else if (manusEnabled && directRemoteEgressEnabled && manusRemoteAllowed && uniqueAllowedAgents.every((id) => id === "manus")) {
+    assert.equal(manusAccountCapabilitiesAcknowledged, true, "Manus profile requires account-default capability acknowledgement");
+    assert.equal(manusAccountProfileConfigured, true, "Manus profile requires a valid non-secret account capability profile label");
+    profile = "windows-local-manus";
+  } else {
+    throw new Error("shared config capability state is ambiguous: core requires Manus and remote egress disabled with an empty allowlist; the recognized Manus profile requires both enabled with only Manus allowed");
+  }
+  const capabilities = {
+    codexEnabled,
+    claudeEnabled,
+    geminiEnabled,
+    manusEnabled,
+    directRemoteEgressEnabled,
+    directRemoteAllowedAgentCount: uniqueAllowedAgents.length,
+    manusRemoteAllowed,
+    manusAccountCapabilitiesAcknowledged,
+    manusAccountProfileConfigured,
+  };
+  const digestInput = {
+    schemaVersion: 1,
+    releaseId: candidate.releaseId,
+    runtimeSha256: candidate.runtimeSha256,
+    configSha256: candidate.configSha256,
+    profile,
+    capabilities,
+  };
+  return {
+    schemaVersion: 1,
+    derivation: "hash-verified-shared-config",
+    profile,
+    profileInputSha256: sha256(Buffer.from(JSON.stringify(digestInput), "utf8")),
+    capabilities,
+  };
+}
+
+function assertNoContradictoryCapabilityClaims(descriptor, acceptance) {
+  const checkIds = new Set(descriptor.checks.map((check) => check.id));
+  const knownAgents = new Set(["codex", "claude", "gemini", "manus"]);
+  for (const run of descriptor.agentRuns) {
+    assert.ok(knownAgents.has(run.agent), `schema-v2 agent run uses an unsupported or non-canonical backend id: ${run.agent}`);
+    if (run.outputCheckId !== null) assert.ok(checkIds.has(run.outputCheckId), `agent run ${run.id} references a missing output check: ${run.outputCheckId}`);
+  }
+  if (!acceptance.capabilities.manusEnabled) {
+    const passingManusChecks = descriptor.checks
+      .filter((check) => /manus/i.test(check.id) && check.status === "pass")
+      .map((check) => check.id);
+    assert.deepEqual(passingManusChecks, [], `disabled Manus profile cannot contain passing Manus checks: ${passingManusChecks.join(", ")}`);
+    const passingManusRuns = descriptor.agentRuns.filter((run) => run.agent === "manus" && run.status === "pass").map((run) => run.id);
+    assert.deepEqual(passingManusRuns, [], `disabled Manus profile cannot contain passing Manus agent runs: ${passingManusRuns.join(", ")}`);
+  }
+  if (!acceptance.capabilities.geminiEnabled) {
+    const passingGeminiChecks = descriptor.checks.filter((check) => /gemini/i.test(check.id) && check.status === "pass").map((check) => check.id);
+    assert.deepEqual(passingGeminiChecks, [], `disabled Gemini profile cannot contain passing Gemini checks: ${passingGeminiChecks.join(", ")}`);
+    const passingGeminiRuns = descriptor.agentRuns.filter((run) => run.agent === "gemini" && run.status === "pass").map((run) => run.id);
+    assert.deepEqual(passingGeminiRuns, [], `disabled Gemini profile cannot contain passing Gemini agent runs: ${passingGeminiRuns.join(", ")}`);
+  }
+  if (acceptance.profile === "windows-local-core") {
+    const passingRemoteChecks = descriptor.checks.filter((check) => check.gate === "remote-service" && check.status === "pass").map((check) => check.id);
+    assert.deepEqual(passingRemoteChecks, [], `core profile cannot contain passing remote-service checks: ${passingRemoteChecks.join(", ")}`);
+    const passingRemoteRuns = descriptor.agentRuns.filter((run) => run.boundary === "remote-service" && run.status === "pass").map((run) => run.id);
+    assert.deepEqual(passingRemoteRuns, [], `core profile cannot contain passing remote-service agent runs: ${passingRemoteRuns.join(", ")}`);
+  }
 }
 
 async function listReleaseFiles(root, relativeRoot = "") {
@@ -457,40 +722,146 @@ function assertSafeReleaseRelativePath(value, label) {
   assert.ok(value.length > 0 && !value.startsWith("/") && !value.endsWith("/") && !value.includes("\\") && !value.includes(":") && !value.split("/").includes(".."), `${label} is unsafe: ${value}`);
 }
 
-async function assertAccepted(descriptor, candidate) {
+async function assertAccepted(descriptor, candidate, evidenceRoot) {
   assert.ok(["accepted", "accepted-with-residual-risks"].includes(descriptor.disposition), "--require-accepted requires an accepted disposition");
   const incomplete = descriptor.checks.filter((check) => check.required && check.status !== "pass");
   assert.deepEqual(incomplete.map((check) => check.id), [], `required checks are incomplete: ${incomplete.map((check) => check.id).join(", ")}`);
   const byId = new Map(descriptor.checks.map((check) => [check.id, check]));
-  for (const [id, gate] of ACCEPTANCE_PROFILE) {
+  const acceptanceProfile = descriptor.schemaVersion === 1
+    ? LEGACY_ACCEPTANCE_PROFILE
+    : ACCEPTANCE_PROFILES[candidate.acceptance.profile];
+  for (const [id, gate] of acceptanceProfile) {
     const check = byId.get(id);
     assert.equal(check?.required && check?.status === "pass", true, `accepted evidence requires the passing required check ${id}`);
     assert.equal(check.gate, gate, `accepted evidence requires ${id} to use the ${gate} gate`);
   }
-  for (const gate of GATES) assert.ok(descriptor.checks.some((check) => check.required && check.gate === gate && check.status === "pass"), `accepted evidence requires a passing required ${gate} gate`);
+  if (descriptor.schemaVersion === 2 && candidate.acceptance.profile === "windows-local-manus") {
+    throw new Error("RC9 cannot accept the windows-local-manus profile until Manus live-canary artifacts are bound to the shared-config profile input");
+  }
+  const selectedGates = new Set(acceptanceProfile.map(([, gate]) => gate));
+  for (const gate of selectedGates) assert.ok(descriptor.checks.some((check) => check.required && check.gate === gate && check.status === "pass"), `accepted evidence requires a passing required ${gate} gate`);
+  if (descriptor.schemaVersion === 2) await assertProviderDisabledCanaryEvidence(byId.get("installed-provider-disabled-canary"), candidate, evidenceRoot);
   assert.equal(descriptor.rollback.canaryStatus, "pass", "accepted evidence requires a passing rollback canary");
   assert.equal(candidate.liveAtEnd, candidate.releaseId, "accepted evidence requires candidate.liveAtEnd to equal the candidate release");
-  const markerPath = await requireRegularFile(join(candidate.installRoot, "current-release.json"), "promotion marker");
-  const marker = JSON.parse(await readFile(markerPath, "utf8"));
-  exactObject(marker, ["schemaVersion", "releaseId", "releasePath", "runtimeSha256", "promotedAt", "backupPath"], "promotion marker");
-  assert.equal(marker.schemaVersion, 1, "promotion marker schemaVersion must be 1");
-  assert.equal(marker.releaseId, candidate.releaseId, "promotion marker does not name the candidate release");
-  assert.ok(samePath(await requireDirectory(marker.releasePath, "promotion marker releasePath"), candidate.releasePath), "promotion marker releasePath differs from the candidate");
-  assert.equal(marker.runtimeSha256, candidate.runtimeSha256, "promotion marker runtime hash differs from the candidate");
-  assert.equal(typeof marker.promotedAt, "string", "promotion marker promotedAt must be a timestamp");
-  assert.ok(Number.isFinite(Date.parse(marker.promotedAt)) && marker.promotedAt.endsWith("Z"), "promotion marker promotedAt must be a valid UTC timestamp");
-  await requireDirectory(marker.backupPath, "promotion marker backupPath");
-  const shimPath = await requireRegularFile(join(candidate.installRoot, "agent-bridge.mjs"), "stable shim");
-  const shim = await readFile(shimPath, "utf8");
-  const imports = [...shim.matchAll(/^await import\(new URL\("(\.\/releases\/[^"\r\n]+\/server\/agent-bridge\.mjs)", import\.meta\.url\)\.href\);$/gm)];
-  assert.equal(imports.length, 1, "stable shim must contain exactly one recognized release import statement");
-  const shimRuntime = resolve(candidate.installRoot, ...imports[0][1].split("/"));
-  assert.ok(samePath(await requireRegularFile(shimRuntime, "stable shim runtime"), candidate.runtimePath), "stable shim does not resolve to the candidate runtime");
+  await verifyAcceptedLiveBinding(descriptor.schemaVersion, candidate);
   assert.ok(descriptor.rollback.priorReleaseId && descriptor.rollback.priorRuntimeSha256, "accepted evidence requires a named prior release and runtime hash");
   assert.notEqual(descriptor.rollback.priorReleaseId, candidate.releaseId, "rollback release must differ from the candidate");
   const priorRuntime = await requireRegularFile(join(candidate.installRoot, "releases", descriptor.rollback.priorReleaseId, "server", "agent-bridge.mjs"), "rollback runtime");
   assert.equal(sha256(await readFile(priorRuntime)), descriptor.rollback.priorRuntimeSha256, "rollback runtime hash differs from the descriptor");
   if (descriptor.disposition === "accepted-with-residual-risks") assert.ok(descriptor.residualRisks.length > 0, "accepted-with-residual-risks requires at least one residual risk");
+}
+
+async function verifySharedConfigBinding(candidate) {
+  const configPath = await requireRegularFile(candidate.configPath, "shared config final verification");
+  assert.ok(samePath(configPath, candidate.configPath), "shared config identity changed during evidence export");
+  assert.equal(sha256(await readFile(configPath)), candidate.configSha256, "shared config changed during evidence export");
+}
+
+async function acquireAcceptedExportCutoverLock(installRoot) {
+  const lockPath = join(installRoot, ".agent-bridge-cutover.lock");
+  const token = randomUUID().replaceAll("-", "");
+  const record = {
+    schemaVersion: 1,
+    status: "active",
+    pid: process.pid,
+    token,
+    acquiredAt: new Date().toISOString(),
+  };
+  let handle;
+  let complete = false;
+  try {
+    try { handle = await open(lockPath, "wx", 0o600); }
+    catch (error) {
+      if (error?.code === "EEXIST") {
+        throw new Error(`another Agent Bridge cutover mutation owns the install lock: ${lockPath}; do not delete or reclaim it automatically`);
+      }
+      throw error;
+    }
+    await handle.writeFile(`${JSON.stringify(record)}\n`, "utf8");
+    await handle.sync();
+    complete = true;
+  } finally {
+    if (handle) await handle.close().catch(() => {});
+    if (handle && !complete) await unlink(lockPath).catch(() => {});
+  }
+  return { path: lockPath, token, pid: process.pid };
+}
+
+async function releaseAcceptedExportCutoverLock(lock) {
+  const lockPath = await requireRegularFile(lock.path, "accepted-export cutover lock");
+  assert.ok(samePath(lockPath, lock.path), "accepted-export cutover lock identity changed while owned");
+  let record;
+  try { record = JSON.parse(await readFile(lockPath, "utf8")); }
+  catch (error) { throw new Error(`accepted-export cutover lock is unreadable while owned: ${error.message}`); }
+  exactObject(record, ["schemaVersion", "status", "pid", "token", "acquiredAt"], "accepted-export cutover lock");
+  assert.equal(record.schemaVersion, 1, "accepted-export cutover lock schemaVersion changed while owned");
+  assert.equal(record.status, "active", "accepted-export cutover lock status changed while owned");
+  assert.equal(record.pid, lock.pid, "accepted-export cutover lock PID changed while owned");
+  assert.equal(record.token, lock.token, "accepted-export cutover lock token changed while owned");
+  canonicalTimestamp(record.acquiredAt, "accepted-export cutover lock acquiredAt");
+  await unlink(lockPath);
+}
+
+async function verifyAcceptedLiveBinding(descriptorSchemaVersion, candidate) {
+  await verifySharedConfigBinding(candidate);
+  const runtimePath = await requireRegularFile(candidate.runtimePath, "candidate runtime final verification");
+  assert.ok(samePath(runtimePath, candidate.runtimePath), "candidate runtime identity changed during evidence export");
+  assert.equal(sha256(await readFile(runtimePath)), candidate.runtimeSha256, "candidate runtime changed during evidence export");
+  const markerPath = await requireRegularFile(join(candidate.installRoot, "current-release.json"), "promotion marker");
+  const marker = JSON.parse(await readFile(markerPath, "utf8"));
+  const markerKeys = ["schemaVersion", "releaseId", "releasePath", "runtimeSha256", "promotedAt", "backupPath"];
+  if (descriptorSchemaVersion === 2) markerKeys.splice(4, 0, "shimSha256", "configSha256");
+  exactObject(marker, markerKeys, "promotion marker");
+  assert.equal(marker.schemaVersion, 1, "promotion marker schemaVersion must be 1");
+  assert.equal(marker.releaseId, candidate.releaseId, "promotion marker does not name the candidate release");
+  assert.ok(samePath(await requireDirectory(marker.releasePath, "promotion marker releasePath"), candidate.releasePath), "promotion marker releasePath differs from the candidate");
+  assert.equal(marker.runtimeSha256, candidate.runtimeSha256, "promotion marker runtime hash differs from the candidate");
+  if (descriptorSchemaVersion === 2) assert.equal(marker.configSha256, candidate.configSha256, "promotion marker config hash differs from the candidate");
+  assert.equal(typeof marker.promotedAt, "string", "promotion marker promotedAt must be a timestamp");
+  assert.ok(Number.isFinite(Date.parse(marker.promotedAt)) && marker.promotedAt.endsWith("Z"), "promotion marker promotedAt must be a valid UTC timestamp");
+  await requireDirectory(marker.backupPath, "promotion marker backupPath");
+  const shimPath = await requireRegularFile(join(candidate.installRoot, "agent-bridge.mjs"), "stable shim");
+  const shimBytes = await readFile(shimPath);
+  if (descriptorSchemaVersion === 2) assert.equal(marker.shimSha256, sha256(shimBytes), "promotion marker shim hash differs from the stable shim");
+  const shim = shimBytes.toString("utf8");
+  const imports = [...shim.matchAll(/^await import\(new URL\("(\.\/releases\/[^"\r\n]+\/server\/agent-bridge\.mjs)", import\.meta\.url\)\.href\);$/gm)];
+  assert.equal(imports.length, 1, "stable shim must contain exactly one recognized release import statement");
+  const shimRuntime = resolve(candidate.installRoot, ...imports[0][1].split("/"));
+  assert.ok(samePath(await requireRegularFile(shimRuntime, "stable shim runtime"), candidate.runtimePath), "stable shim does not resolve to the candidate runtime");
+}
+
+async function assertProviderDisabledCanaryEvidence(check, candidate, evidenceRoot) {
+  const records = check.evidence.filter((item) => item.mediaType === "application/json");
+  assert.equal(records.length, 1, "installed-provider-disabled-canary requires exactly one structured JSON evidence record");
+  const record = records[0];
+  const path = await requireRegularFile(record.path, "installed-provider-disabled-canary evidence");
+  assert.ok(isInsideOrEqual(evidenceRoot, path), "installed-provider-disabled-canary evidence escapes descriptor.evidenceRoot");
+  const bytes = await readFile(path);
+  assert.equal(sha256(bytes), record.expectedSha256, "installed-provider-disabled-canary evidence hash differs from the descriptor");
+  const evidence = JSON.parse(bytes.toString("utf8"));
+  assert.equal(evidence.schemaVersion, 2, "installed-provider-disabled-canary evidence schemaVersion must be 2");
+  assert.equal(evidence.status, "pass", "installed-provider-disabled-canary evidence did not pass");
+  assert.equal(evidence.version, candidate.version, "installed-provider-disabled-canary version differs from the candidate");
+  assert.equal(evidence.runtimeSha256, candidate.runtimeSha256, "installed-provider-disabled-canary runtime hash differs from the candidate");
+  assert.ok(samePath(await requireDirectory(evidence.releasePath, "installed-provider-disabled-canary releasePath"), candidate.releasePath), "installed-provider-disabled-canary release path differs from the candidate");
+  assert.ok(samePath(await requireRegularFile(evidence.runtimePath, "installed-provider-disabled-canary runtimePath"), candidate.runtimePath), "installed-provider-disabled-canary runtime path differs from the candidate");
+  assert.equal(evidence.serverVersion?.version, candidate.version, "installed-provider-disabled-canary MCP version differs from the candidate");
+  assert.equal(evidence.entrypoint, "runtime", "installed-provider-disabled-canary must launch the immutable runtime directly");
+  assert.equal(evidence.profile, "strict", "installed-provider-disabled-canary must use the strict profile");
+  assert.equal(evidence.expectedPromotion, "unpromoted", "installed-provider-disabled-canary must be captured before promotion");
+  assert.notEqual(evidence.promotionStatus, "current", "installed-provider-disabled-canary unexpectedly ran after promotion");
+  assert.equal(evidence.localPromotion?.current, false, "installed-provider-disabled-canary local promotion state is current");
+  assert.equal(evidence.providerCount, 0, "installed-provider-disabled-canary enabled a provider");
+  assert.equal(evidence.sessionCount, 0, "installed-provider-disabled-canary created a session");
+  assert.equal(evidence.approvalCount, 0, "installed-provider-disabled-canary created an approval");
+  assert.deepEqual(evidence.budget, { enabled: false }, "installed-provider-disabled-canary enabled a remote-cost budget");
+  assert.deepEqual(evidence.stableFilesAfter, evidence.stableFilesBefore, "installed-provider-disabled-canary changed stable files");
+  assert.ok(Array.isArray(evidence.disabledDelegationChecks), "installed-provider-disabled-canary omitted disabled delegation checks");
+  const disabled = [...evidence.disabledDelegationChecks].sort((left, right) => String(left.agent).localeCompare(String(right.agent)));
+  assert.deepEqual(disabled, [
+    { agent: "gemini", rejected: true, sessionCreated: false, adapterResolutionRejected: true },
+    { agent: "manus", rejected: true, sessionCreated: false, adapterResolutionRejected: true },
+  ], "installed-provider-disabled-canary disabled delegation results are invalid");
 }
 
 async function copyEvidenceArtifacts(checks, artifactsDir, redactions, evidenceRoot) {
@@ -643,7 +1014,7 @@ function buildPacket(descriptor, candidate, artifacts, createdAt) {
     refsByCheck.set(artifact.checkId, refs);
   }
   return {
-    schemaVersion: 1,
+    schemaVersion: descriptor.schemaVersion,
     packetId: descriptor.packetId,
     createdAt,
     sanitization: {
@@ -651,6 +1022,7 @@ function buildPacket(descriptor, candidate, artifacts, createdAt) {
       method: descriptor.sanitization.method,
       omittedFields: ["credentials", "environment", "prompts", "transcripts", "raw-provider-details"],
     },
+    ...(descriptor.schemaVersion === 2 ? { acceptance: candidate.acceptance } : {}),
     candidate: {
       version: candidate.version,
       gitSha: candidate.gitSha,
@@ -690,7 +1062,10 @@ function renderMarkdown(packet, jsonHash) {
   const runs = packet.agentRuns.length === 0 ? "No agent-run records were exported." : packet.agentRuns.map((run) => `- **${markdown(run.agent)}:** ${run.status}${run.reason ? ` — ${markdown(run.reason)}` : ""}`).join("\n");
   const risks = packet.residualRisks.length === 0 ? "No residual risks were recorded." : packet.residualRisks.map((risk) => `- **${markdown(risk.id)}:** ${markdown(risk.risk)} (${risk.disposition}; owner: ${markdown(risk.owner)}; review after ${risk.reviewAfter})`).join("\n");
   const operations = packet.candidate.operations.map((operation) => `- \`${operation.path}\`: \`${operation.sha256}\` (${operation.bytes} bytes)`).join("\n");
-  return `# Agent Bridge release evidence\n\n**Packet:** \`${packet.packetId}\`  \n**Disposition:** ${packet.disposition}  \n**Machine record:** \`evidence-report.json\`  \n**Machine-record SHA-256:** \`${jsonHash}\`\n\n## Candidate\n\n| Field | Value |\n| --- | --- |\n| Version | \`${packet.candidate.version}\` |\n| Source commit | \`${packet.candidate.gitSha}\` |\n| Immutable release | \`${packet.candidate.releaseId}\` |\n| Live at start | \`${packet.candidate.liveAtStart ?? "none"}\` |\n| Live at end | \`${packet.candidate.liveAtEnd ?? "none"}\` |\n| Bundle SHA-256 | \`${packet.candidate.bundle.sha256}\` |\n| Runtime SHA-256 | \`${packet.candidate.runtimeSha256}\` |\n| Config SHA-256 | \`${packet.candidate.configSha256}\` |\n\n### Immutable operations\n\n${operations}\n\n## Gate results\n\n| Check | Gate | Status | Evidence or reason |\n| --- | --- | --- | --- |\n${rows}\n\n## Agent runs\n\n${runs}\n\n## Approvals\n\n${packet.approvals.length === 0 ? "No approval records were exported." : packet.approvals.map((approval) => `- \`${approval.id}\`: ${approval.category}, ${approval.state}`).join("\n")}\n\n## Recommendation decisions\n\n${packet.recommendations.length === 0 ? "No recommendation decisions were exported." : packet.recommendations.map((recommendation) => `- **${recommendation.priority} ${markdown(recommendation.title)}:** ${recommendation.decision} — ${markdown(recommendation.reason)}`).join("\n")}\n\n## Workboard\n\n${packet.workboard === null ? "No workboard snapshot was included." : `\`${packet.workboard.id}\` is ${packet.workboard.status} at revision ${packet.workboard.revision}.`}\n\n## Budget\n\n${packet.budget.enabled ? `USD reserved ceiling: ${packet.budget.maxReservedCents} cents; committed reservations: ${packet.budget.reservedCents} cents.` : "The cumulative remote-cost breaker was disabled for this snapshot."}\n\n## Residual risks\n\n${risks}\n\n## Rollback\n\nPrior release: \`${packet.rollback.priorReleaseId ?? "not-recorded"}\`; rollback canary: **${packet.rollback.canaryStatus}**; backup: ${markdown(packet.rollback.backupRef ?? "not-recorded")}.\n\n## Redaction statement\n\n${markdown(packet.sanitization.method)} The exporter omitted credentials, environment values, prompts, transcripts, and raw provider details. Artifact hashes and byte counts are recorded in \`manifest.json\`.\n`;
+  const acceptance = packet.acceptance
+    ? `\n## Capability-scoped acceptance\n\n| Field | Value |\n| --- | --- |\n| Derived profile | \`${packet.acceptance.profile}\` |\n| Derivation | \`${packet.acceptance.derivation}\` |\n| Profile-input SHA-256 | \`${packet.acceptance.profileInputSha256}\` |\n| Manus | ${packet.acceptance.capabilities.manusEnabled ? "enabled; live Manus gates required" : "disabled; not live-certified"} |\n| Gemini | ${packet.acceptance.capabilities.geminiEnabled ? "enabled" : "disabled; not certified by this profile"} |\n\nThis profile is derived from the hash-verified shared config. It is not selected or waived by the descriptor.\n`
+    : "";
+  return `# Agent Bridge release evidence\n\n**Packet:** \`${packet.packetId}\`  \n**Disposition:** ${packet.disposition}  \n**Machine record:** \`evidence-report.json\`  \n**Machine-record SHA-256:** \`${jsonHash}\`${acceptance}\n\n## Candidate\n\n| Field | Value |\n| --- | --- |\n| Version | \`${packet.candidate.version}\` |\n| Source commit | \`${packet.candidate.gitSha}\` |\n| Immutable release | \`${packet.candidate.releaseId}\` |\n| Live at start | \`${packet.candidate.liveAtStart ?? "none"}\` |\n| Live at end | \`${packet.candidate.liveAtEnd ?? "none"}\` |\n| Bundle SHA-256 | \`${packet.candidate.bundle.sha256}\` |\n| Runtime SHA-256 | \`${packet.candidate.runtimeSha256}\` |\n| Config SHA-256 | \`${packet.candidate.configSha256}\` |\n\n### Immutable operations\n\n${operations}\n\n## Gate results\n\n| Check | Gate | Status | Evidence or reason |\n| --- | --- | --- | --- |\n${rows}\n\n## Agent runs\n\n${runs}\n\n## Approvals\n\n${packet.approvals.length === 0 ? "No approval records were exported." : packet.approvals.map((approval) => `- \`${approval.id}\`: ${approval.category}, ${approval.state}`).join("\n")}\n\n## Recommendation decisions\n\n${packet.recommendations.length === 0 ? "No recommendation decisions were exported." : packet.recommendations.map((recommendation) => `- **${recommendation.priority} ${markdown(recommendation.title)}:** ${recommendation.decision} — ${markdown(recommendation.reason)}`).join("\n")}\n\n## Workboard\n\n${packet.workboard === null ? "No workboard snapshot was included." : `\`${packet.workboard.id}\` is ${packet.workboard.status} at revision ${packet.workboard.revision}.`}\n\n## Budget\n\n${packet.budget.enabled ? `USD reserved ceiling: ${packet.budget.maxReservedCents} cents; committed reservations: ${packet.budget.reservedCents} cents.` : "The cumulative remote-cost breaker was disabled for this snapshot."}\n\n## Residual risks\n\n${risks}\n\n## Rollback\n\nPrior release: \`${packet.rollback.priorReleaseId ?? "not-recorded"}\`; rollback canary: **${packet.rollback.canaryStatus}**; backup: ${markdown(packet.rollback.backupRef ?? "not-recorded")}.\n\n## Redaction statement\n\n${markdown(packet.sanitization.method)} Bounded pattern and path redaction is not semantic DLP; operator inspection is required before sharing. Artifact hashes and byte counts are recorded in \`manifest.json\`.\n`;
 }
 
 async function validateNewOutputDirectory(output, installRoot, evidenceRoot) {
@@ -744,6 +1119,63 @@ async function syncDirectory(path) {
 function exactObject(value, keys, label) {
   assert.ok(value !== null && typeof value === "object" && !Array.isArray(value), `${label} must be an object`);
   assert.deepEqual(Object.keys(value).sort(), [...keys].sort(), `${label} has missing or unknown fields`);
+}
+async function canonicalConfigDirectory(value, label) {
+  const expanded = value === "~"
+    ? homedir()
+    : value.startsWith(`~${sep}`) || value.startsWith("~/") || value.startsWith("~\\")
+      ? join(homedir(), value.slice(2))
+      : value;
+  return requireDirectory(resolve(expanded), label);
+}
+function validateManusBaseUrl(value, allowDevelopmentBaseUrl) {
+  const url = new URL(value);
+  assert.ok(!url.username && !url.password, "shared config Manus baseUrl must not contain credentials");
+  assert.ok(!url.search && !url.hash, "shared config Manus baseUrl must not contain a query or fragment");
+  if (allowDevelopmentBaseUrl) {
+    const hostname = url.hostname.toLowerCase().replace(/^\[|\]$/g, "");
+    assert.ok(["localhost", "127.0.0.1", "::1"].includes(hostname) && ["http:", "https:"].includes(url.protocol), "shared config development Manus baseUrl must be an HTTP(S) loopback endpoint");
+    return;
+  }
+  const hostname = url.hostname.toLowerCase();
+  assert.ok(url.protocol === "https:" && (hostname === "api.manus.ai" || hostname.endsWith(".api.manus.ai")) && !url.port && ["", "/"].includes(url.pathname), "shared config Manus baseUrl must be the HTTPS api.manus.ai endpoint or subdomain");
+}
+function validateAcceptanceReport(value, candidate) {
+  exactObject(value, ["schemaVersion", "derivation", "profile", "profileInputSha256", "capabilities"], "evidence report acceptance");
+  assert.equal(value.schemaVersion, 1, "evidence report acceptance schemaVersion must be 1");
+  assert.equal(value.derivation, "hash-verified-shared-config", "evidence report acceptance derivation is unsupported");
+  assert.ok(Object.hasOwn(ACCEPTANCE_PROFILES, value.profile), "evidence report acceptance profile is unsupported");
+  assert.match(value.profileInputSha256, SHA256, "evidence report acceptance profileInputSha256 is invalid");
+  exactObject(value.capabilities, [
+    "codexEnabled", "claudeEnabled", "geminiEnabled", "manusEnabled", "directRemoteEgressEnabled",
+    "directRemoteAllowedAgentCount", "manusRemoteAllowed", "manusAccountCapabilitiesAcknowledged", "manusAccountProfileConfigured",
+  ], "evidence report acceptance capabilities");
+  for (const key of [
+    "codexEnabled", "claudeEnabled", "geminiEnabled", "manusEnabled", "directRemoteEgressEnabled",
+    "manusRemoteAllowed", "manusAccountCapabilitiesAcknowledged", "manusAccountProfileConfigured",
+  ]) assert.equal(typeof value.capabilities[key], "boolean", `evidence report acceptance capabilities.${key} must be boolean`);
+  assert.ok(Number.isSafeInteger(value.capabilities.directRemoteAllowedAgentCount) && value.capabilities.directRemoteAllowedAgentCount >= 0 && value.capabilities.directRemoteAllowedAgentCount <= 32, "evidence report acceptance capabilities.directRemoteAllowedAgentCount is invalid");
+  assert.equal(value.capabilities.codexEnabled, true, "evidence report acceptance requires Codex enabled");
+  assert.equal(value.capabilities.claudeEnabled, true, "evidence report acceptance requires Claude enabled");
+  assert.equal(value.capabilities.geminiEnabled, false, "evidence report acceptance does not support Gemini enabled");
+  const derivedProfile = !value.capabilities.manusEnabled && !value.capabilities.directRemoteEgressEnabled
+      && value.capabilities.directRemoteAllowedAgentCount === 0 && !value.capabilities.manusRemoteAllowed
+    ? "windows-local-core"
+    : value.capabilities.manusEnabled && value.capabilities.directRemoteEgressEnabled && value.capabilities.manusRemoteAllowed
+      && value.capabilities.directRemoteAllowedAgentCount === 1
+      && value.capabilities.manusAccountCapabilitiesAcknowledged && value.capabilities.manusAccountProfileConfigured
+      ? "windows-local-manus"
+      : null;
+  assert.equal(value.profile, derivedProfile, "evidence report acceptance profile differs from its capability projection");
+  const digestInput = {
+    schemaVersion: 1,
+    releaseId: candidate.releaseId,
+    runtimeSha256: candidate.runtimeSha256,
+    configSha256: candidate.configSha256,
+    profile: value.profile,
+    capabilities: value.capabilities,
+  };
+  assert.equal(value.profileInputSha256, sha256(Buffer.from(JSON.stringify(digestInput), "utf8")), "evidence report acceptance profile-input digest differs");
 }
 
 function assertUnique(value, key, label, maximum, validator) {

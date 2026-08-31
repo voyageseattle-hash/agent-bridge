@@ -1,6 +1,6 @@
 {
   "name": "agent-bridge-mcp",
-  "version": "0.3.0-rc.8",
+  "version": "0.3.0-rc.9",
   "description": "A local MCP bridge for delegating and handing work between coding-agent CLIs.",
   "private": true,
   "type": "module",

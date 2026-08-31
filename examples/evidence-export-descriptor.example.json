@@ -1,9 +1,14 @@
 {
-  "schemaVersion": 1,
-  "packetId": "agent-bridge-0.3.0-rc.7-example",
+  "schemaVersion": 2,
+  "packetId": "agent-bridge-0.3.0-rc.9-example",
   "evidenceRoot": "C:\\absolute\\durable-evidence-root",
+  "acceptancePolicy": {
+    "schemaVersion": 1,
+    "derivation": "hash-verified-shared-config",
+    "expectedProfile": "windows-local-core"
+  },
   "sanitization": {
-    "method": "Replaced private path prefixes and secret-shaped values; omitted credentials, environment values, prompts, transcripts, native provider task IDs, and raw provider details.",
+    "method": "Applied bounded redaction for configured private path prefixes and secret-shaped values; operator reviewed copied evidence for prompts, transcripts, credentials, native provider IDs, and other sensitive content.",
     "redactions": [
       {
         "path": "C:\\absolute\\creator-workspace",
@@ -16,12 +21,12 @@
     ]
   },
   "candidate": {
-    "version": "0.3.0-rc.7",
+    "version": "0.3.0-rc.9",
     "gitSha": "0123456789abcdef0123456789abcdef01234567",
-    "releaseId": "0.3.0-rc.7+0123456",
+    "releaseId": "0.3.0-rc.9+0123456",
     "installRoot": "C:\\absolute\\agent-bridge-install",
-    "releasePath": "C:\\absolute\\agent-bridge-install\\releases\\0.3.0-rc.7+0123456",
-    "bundlePath": "C:\\absolute\\artifact\\agent-bridge-v0.3.0-rc.7.mcpb",
+    "releasePath": "C:\\absolute\\agent-bridge-install\\releases\\0.3.0-rc.9+0123456",
+    "bundlePath": "C:\\absolute\\artifact\\agent-bridge-v0.3.0-rc.9.mcpb",
     "bundleSha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
     "runtimeSha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
     "configPath": "C:\\absolute\\agent-bridge-install\\config.json",
@@ -37,7 +42,7 @@
       "source": "operator-attested",
       "required": true,
       "performedAt": null,
-      "reason": "Template only; run npm run verify against the clean RC6 commit and attach the hash-pinned durable log.",
+      "reason": "Template only; run npm run verify against the clean RC9 commit and attach the hash-pinned durable log.",
       "command": "npm run verify",
       "exitCode": null,
       "evidence": []
@@ -145,31 +150,7 @@
       "source": "operator-attested",
       "required": true,
       "performedAt": null,
-      "reason": "RC6 is not promoted; the stable shim remains on 0.2.1+4785d63.",
-      "command": null,
-      "exitCode": null,
-      "evidence": []
-    },
-    {
-      "id": "manus-remote-canary",
-      "gate": "remote-service",
-      "status": "blocked",
-      "source": "operator-attested",
-      "required": true,
-      "performedAt": null,
-      "reason": "No live provider call was made. The exposed-key rotation refusal is documented as a residual risk, account-default capabilities still require explicit acknowledgement and a stable profile, and the durable one-use ticket has not been consumed.",
-      "command": null,
-      "exitCode": null,
-      "evidence": []
-    },
-    {
-      "id": "manus-waiting-action-canary",
-      "gate": "remote-service",
-      "status": "blocked",
-      "source": "operator-attested",
-      "required": true,
-      "performedAt": null,
-      "reason": "No safe naturally occurring waiting event was available; no paid or externally consequential event was manufactured.",
+      "reason": "RC9 is not promoted; the stable shim remains on 0.2.1+4785d63.",
       "command": null,
       "exitCode": null,
       "evidence": []
@@ -181,7 +162,7 @@
       "source": "operator-attested",
       "required": true,
       "performedAt": null,
-      "reason": "RC6 has not been promoted and Codex has not been restarted against it.",
+      "reason": "RC9 has not been promoted and Codex has not been restarted against it.",
       "command": null,
       "exitCode": null,
       "evidence": []
@@ -193,7 +174,7 @@
       "source": "operator-attested",
       "required": true,
       "performedAt": null,
-      "reason": "RC6 has not been promoted and Claude Code has not been restarted against it.",
+      "reason": "RC9 has not been promoted and Claude Code has not been restarted against it.",
       "command": null,
       "exitCode": null,
       "evidence": []
@@ -205,7 +186,7 @@
       "source": "operator-attested",
       "required": true,
       "performedAt": null,
-      "reason": "RC6 has not been promoted and Claude Desktop has not been restarted against it.",
+      "reason": "RC9 has not been promoted and Claude Desktop has not been restarted against it.",
       "command": null,
       "exitCode": null,
       "evidence": []
@@ -217,7 +198,7 @@
       "source": "operator-attested",
       "required": true,
       "performedAt": null,
-      "reason": "A creator has not completed the visible RC6 collaborative workflow acceptance.",
+      "reason": "A creator has not completed the visible RC9 collaborative workflow acceptance.",
       "command": null,
       "exitCode": null,
       "evidence": []
@@ -229,7 +210,7 @@
       "source": "operator-attested",
       "required": true,
       "performedAt": null,
-      "reason": "The RC6 rollback canary has not been run.",
+      "reason": "The RC9 rollback canary has not been run.",
       "command": null,
       "exitCode": null,
       "evidence": []
@@ -242,7 +223,7 @@
       "agent": "codex",
       "boundary": "local-cli",
       "status": "not-run",
-      "reason": "No RC6 installed-runtime canary was run.",
+      "reason": "No RC9 installed-runtime canary was run.",
       "sessionRef": null,
       "outputCheckId": "codex-installed-runtime"
     },
@@ -251,27 +232,9 @@
       "agent": "claude",
       "boundary": "local-cli",
       "status": "not-run",
-      "reason": "No RC6 installed-runtime canary was run.",
+      "reason": "No RC9 installed-runtime canary was run.",
       "sessionRef": null,
       "outputCheckId": "claude-installed-runtime"
-    },
-    {
-      "id": "manus-run",
-      "agent": "manus",
-      "boundary": "remote-service",
-      "status": "blocked",
-      "reason": "No live provider call was made and no durable one-use ticket was consumed.",
-      "sessionRef": null,
-      "outputCheckId": "manus-remote-canary"
-    },
-    {
-      "id": "manus-waiting-run",
-      "agent": "manus",
-      "boundary": "remote-service",
-      "status": "blocked",
-      "reason": "No safe naturally occurring waiting event was available.",
-      "sessionRef": null,
-      "outputCheckId": "manus-waiting-action-canary"
     }
   ],
   "recommendations": [],
@@ -282,22 +245,7 @@
     "maxReservedCents": null,
     "reservedCents": null
   },
-  "residualRisks": [
-    {
-      "id": "RR-EXPOSED-MANUS-KEY",
-      "risk": "The operator explicitly declined rotation of a Manus key previously exposed in chat. Credential hygiene is not passed; use remains an accepted residual risk.",
-      "owner": "operator",
-      "disposition": "accepted",
-      "reviewAfter": "2030-02-01T00:00:00.000Z"
-    },
-    {
-      "id": "RR-MANUS-ACCOUNT-DEFAULTS",
-      "risk": "The Manus API cannot disable account-default skills. Agent Bridge can clear connector and forced-skill request fields but cannot override account defaults; explicit operator acknowledgement and a stable non-secret account-capability profile are required before enablement.",
-      "owner": "operator",
-      "disposition": "accepted",
-      "reviewAfter": "2030-02-01T00:00:00.000Z"
-    }
-  ],
+  "residualRisks": [],
   "rollback": {
     "priorReleaseId": "0.2.1+4785d63",
     "priorRuntimeSha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",

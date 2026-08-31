@@ -139,6 +139,9 @@ let tools;
 let diagnostic;
 let budgetStatus;
 let agents;
+let sessions;
+let approvals;
+let disabledDelegationChecks = [];
 let serverVersion;
 try {
   await client.connect(transport);
@@ -158,6 +161,26 @@ try {
     assert.notEqual(budgetStatus.isError, true, JSON.stringify(budgetStatus));
     assert.deepEqual(budgetStatus.structuredContent.budget, { enabled: false }, "provider-disabled canary unexpectedly enabled a cumulative remote-cost budget");
     assert.deepEqual(diagnostic.structuredContent.budget, { enabled: false }, "diagnostics and the dedicated budget tool disagree");
+    for (const agent of ["manus", "gemini"]) {
+      const rejected = await client.callTool({
+        name: "delegate_task",
+        arguments: { agent, prompt: "Provider-disabled release canary. Do not contact any provider.", cwd: work, sandbox: "read-only" },
+      });
+      assert.equal(rejected.isError, true, `disabled ${agent} delegation unexpectedly succeeded`);
+      const message = (rejected.content ?? []).filter((item) => item.type === "text").map((item) => item.text).join("\n");
+      assert.match(message, /unknown agent.*none enabled/i, `disabled ${agent} delegation did not fail at the adapter registry`);
+      disabledDelegationChecks.push({ agent, rejected: true, sessionCreated: false, adapterResolutionRejected: true });
+    }
+    sessions = await client.callTool({ name: "list_sessions", arguments: {} });
+    assert.notEqual(sessions.isError, true, JSON.stringify(sessions));
+    assert.deepEqual(sessions.structuredContent.sessions, [], "disabled delegation unexpectedly created a bridge session");
+    approvals = await client.callTool({ name: "list_approvals", arguments: {} });
+    assert.notEqual(approvals.isError, true, JSON.stringify(approvals));
+    assert.deepEqual(approvals.structuredContent.approvals, [], "disabled delegation unexpectedly created an approval");
+    diagnostic = await client.callTool({ name: "diagnose_install", arguments: {} });
+    assert.notEqual(diagnostic.isError, true, JSON.stringify(diagnostic));
+    agents = await client.callTool({ name: "list_agents", arguments: {} });
+    assert.notEqual(agents.isError, true, JSON.stringify(agents));
   }
 } finally {
   await client.close().catch(() => {});
@@ -179,7 +202,7 @@ if (profile === "strict") {
 const after = await hashOptionalFiles(stablePaths);
 assert.deepEqual(after, before, "canary changed the stable shim, shared config, or promotion marker");
 const evidence = {
-  schemaVersion: 1,
+  schemaVersion: 2,
   status: "pass",
   runId: randomUUID(),
   checkedAt: new Date().toISOString(),
@@ -198,6 +221,9 @@ const evidence = {
   toolCount: tools.tools.length,
   requiredToolCount: requiredTools.length,
   providerCount: Array.isArray(agents.structuredContent?.agents) ? agents.structuredContent.agents.length : null,
+  sessionCount: Array.isArray(sessions?.structuredContent?.sessions) ? sessions.structuredContent.sessions.length : null,
+  approvalCount: Array.isArray(approvals?.structuredContent?.approvals) ? approvals.structuredContent.approvals.length : null,
+  disabledDelegationChecks,
   budget: budgetStatus?.structuredContent?.budget ?? null,
   stableFilesBefore: before,
   stableFilesAfter: after,
