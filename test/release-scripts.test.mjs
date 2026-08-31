@@ -148,7 +148,7 @@ test("Windows release scripts install immutably, switch atomically, block live p
     const stateBefore = runScript("scripts/protect-state.ps1", ["-StateDir", stateDir, "-AuditOnly"]);
     assert.equal(stateBefore.status, 0, stateBefore.stderr);
     assert.equal(JSON.parse(stateBefore.stdout).compliant, false);
-    const protectedState = runScript("scripts/protect-state.ps1", ["-StateDir", stateDir, "-Force"]);
+    const protectedState = runScript("scripts/protect-state.ps1", ["-StateDir", stateDir, "-BackupPath", join(root, "state-acl-backup.json"), "-Force"]);
     assert.equal(protectedState.status, 0, protectedState.stderr);
     assert.equal(JSON.parse(protectedState.stdout).compliant, true);
     await writeFile(join(stateDir, "created-after-protection.json"), "{}\n");
@@ -324,12 +324,15 @@ test("cutover transaction restores every registration and install pointer after 
     const installed = runScript("scripts/install-release.ps1", ["-BundlePath", bundle, "-InstallRoot", installRoot]);
     assert.equal(installed.status, 0, installed.stderr);
     const mutationPidLog = join(root, "mutation-pids.txt");
-    const result = runScript(scripts.cutover, ["-ReleaseId", releaseId, "-InstallRoot", installRoot, "-StateDir", stateDir, "-UserProfile", profile, "-AppData", appData, "-LocalAppData", localAppData, "-NodePath", process.execPath], { AGENT_BRIDGE_TEST_FAIL_MARKER_WRITE: "1", AGENT_BRIDGE_TEST_MUTATION_PID_LOG: mutationPidLog });
+    const stateAclBackup = join(root, "state-acl-backup.json");
+    const result = runScript(scripts.cutover, ["-ReleaseId", releaseId, "-InstallRoot", installRoot, "-StateDir", stateDir, "-UserProfile", profile, "-AppData", appData, "-LocalAppData", localAppData, "-NodePath", process.execPath, "-ApplyStateAcl", "-StateAclBackupPath", stateAclBackup], { AGENT_BRIDGE_TEST_FAIL_MARKER_WRITE: "1", AGENT_BRIDGE_TEST_MUTATION_PID_LOG: mutationPidLog });
     assert.notEqual(result.status, 0);
     assert.match(result.stderr, /client registrations were restored/i);
     const hardenedState = runScript("scripts/protect-state.ps1", ["-StateDir", stateDir, "-AuditOnly"]);
     assert.equal(hardenedState.status, 0, hardenedState.stderr);
     assert.equal(JSON.parse(hardenedState.stdout).compliant, true, "promotion rollback must not undo forward-only ACL hardening");
+    assert.match(sha256(await readFile(stateAclBackup)), /^[0-9a-f]{64}$/, "retained ACL backup must remain readable");
+    assert.match(result.stderr, /hardening remains committed by policy[\s\S]*retained backup/i);
     for (const [path, expected] of originals) assert.deepEqual(await readFile(path), expected, path);
     await assert.rejects(readFile(join(installRoot, ".agent-bridge-cutover.lock")));
     const temporary = (await readdir(installRoot)).filter((name) => name.startsWith(".agent-bridge-"));
@@ -386,10 +389,11 @@ test("cutover validates its target before registrations and reports target plus 
     for (const [path, bytes] of originals) assert.deepEqual(await readFile(path), bytes, `expanded target mutated ${path}`);
     await rm(unexpectedOperation);
 
-    const completed = runScript(scripts.cutover, ["-ReleaseId", releaseId, ...cutoverArgs]);
+    const completed = runScript(scripts.cutover, ["-ReleaseId", releaseId, ...cutoverArgs, "-ApplyStateAcl", "-StateAclBackupPath", join(root, "state-acl-backup.json")]);
     assert.equal(completed.status, 0, completed.stderr);
     const report = JSON.parse(completed.stdout);
     assert.equal(report.status, "cutover-complete");
+    assert.deepEqual(report.stateAcl.authorization, { applyStateAcl: true, protectionInvoked: true, rollbackPolicy: "forward-only-security-hardening" });
     assert.equal(report.target.releaseId, releaseId);
     assert.equal(report.target.releasePath, releasePath);
     assert.equal(report.target.runtime.sha256, sha256(runtime));
@@ -437,7 +441,7 @@ test("ACL inspection and protection work under PowerShell 7", { skip: !onWindows
   try {
     await mkdir(stateDir);
     await mkdir(installRoot);
-    const protectedState = runScriptWith("pwsh.exe", "scripts/protect-state.ps1", ["-StateDir", stateDir, "-Force"]);
+    const protectedState = runScriptWith("pwsh.exe", "scripts/protect-state.ps1", ["-StateDir", stateDir, "-BackupPath", join(root, "state-acl-backup.json"), "-Force"]);
     assert.equal(protectedState.status, 0, protectedState.stderr);
     assert.equal(JSON.parse(protectedState.stdout).status, "protected");
     const inspectScript = await createInspectionHarness(root);
@@ -449,6 +453,46 @@ test("ACL inspection and protection work under PowerShell 7", { skip: !onWindows
   } finally {
     await rm(root, { recursive: true, force: true });
   }
+});
+
+test("state ACL backup supports exact manual restore and automatic partial-apply recovery", { skip: !onWindows }, async () => {
+  const root = await mkdtemp(join(tmpdir(), "agent-bridge-acl-roundtrip-"));
+  const stateDir = join(root, "state");
+  const backup = join(root, "state-acl-backup.json");
+  const refusedBackup = join(root, "state-acl-refused-backup.json");
+  const injectedBackup = join(root, "state-acl-injected-backup.json");
+  try {
+    await mkdir(join(stateDir, "child"), { recursive: true });
+    await writeFile(join(stateDir, "child", "record.json"), "{}\n");
+    const before = aclProjection(stateDir);
+    const applied = runScript("scripts/protect-state.ps1", ["-StateDir", stateDir, "-BackupPath", backup, "-Force"]);
+    assert.equal(applied.status, 0, applied.stderr);
+    const receipt = JSON.parse(applied.stdout);
+    assert.equal(receipt.backupPath, backup);
+    assert.match(receipt.backupSha256, /^[0-9a-f]{64}$/);
+    const restored = runScript("scripts/protect-state.ps1", ["-StateDir", stateDir, "-RestoreFrom", backup, "-ExpectedBackupSha256", receipt.backupSha256, "-Force"]);
+    assert.equal(restored.status, 0, restored.stderr);
+    assert.deepEqual(aclProjection(stateDir), before, "manual restore did not return every item to its original owner/DACL projection");
+
+    const refused = runScript("scripts/protect-state.ps1", ["-StateDir", stateDir, "-BackupPath", refusedBackup, "-Force"], { AGENT_BRIDGE_TEST_FAIL_STATE_ACL_BEFORE_APPLY: "1" });
+    assert.notEqual(refused.status, 0);
+    assert.match(refused.stderr, /refused before ACL mutation/i);
+    assert.ok(existsSync(refusedBackup), "pre-mutation refusal must retain the external backup");
+    assert.deepEqual(aclProjection(stateDir), before, "pre-mutation refusal changed the state ACL");
+
+    const injected = runScript("scripts/protect-state.ps1", ["-StateDir", stateDir, "-BackupPath", injectedBackup, "-Force"], { AGENT_BRIDGE_TEST_FAIL_STATE_ACL_AFTER: "2" });
+    assert.notEqual(injected.status, 0);
+    assert.match(injected.stderr, /automatic ACL recovery restored the pre-image/i);
+    assert.ok(existsSync(injectedBackup), "automatic recovery must retain the external backup");
+    assert.deepEqual(aclProjection(stateDir), before, "injected partial apply did not automatically restore the pre-image");
+
+    const tampered = await readFile(backup);
+    await writeFile(backup, Buffer.concat([tampered, Buffer.from("\n", "utf8")]));
+    const denied = runScript("scripts/protect-state.ps1", ["-StateDir", stateDir, "-RestoreFrom", backup, "-ExpectedBackupSha256", receipt.backupSha256, "-Force"]);
+    assert.notEqual(denied.status, 0);
+    assert.match(denied.stderr, /SHA-256 mismatch.*before mutation/i);
+    assert.deepEqual(aclProjection(stateDir), before, "tampered backup changed state before refusal");
+  } finally { await rm(root, { recursive: true, force: true }); }
 });
 
 test("state ACL protection refuses reparse points before mutation", { skip: !onWindows }, async (t) => {
@@ -478,6 +522,16 @@ function runScriptWith(shell, script, args, env = {}, timeout) {
     cwd: process.cwd(), encoding: "utf8", windowsHide: true, maxBuffer: 4 * 1024 * 1024, env: { ...process.env, ...env },
     ...(timeout === undefined ? {} : { timeout }),
   });
+}
+
+function aclProjection(stateDir) {
+  const quoted = stateDir.replaceAll("'", "''");
+  const command = `$sections = [Security.AccessControl.AccessControlSections]::Owner -bor [Security.AccessControl.AccessControlSections]::Access; $items = @(Get-Item -LiteralPath '${quoted}' -Force); $items += @(Get-ChildItem -LiteralPath '${quoted}' -Force -Recurse); @($items | Sort-Object FullName | ForEach-Object { $acl = if ($_.PSIsContainer) { [IO.DirectoryInfo]::new($_.FullName).GetAccessControl() } else { [IO.FileInfo]::new($_.FullName).GetAccessControl() }; [pscustomobject]@{ path=$_.FullName; owner=$acl.GetOwner([Security.Principal.SecurityIdentifier]).Value; protected=[bool]$acl.AreAccessRulesProtected; sddl=$acl.GetSecurityDescriptorSddlForm($sections) } }) | ConvertTo-Json -Depth 4`;
+  const result = spawnSync(powershell, ["-NoLogo", "-NoProfile", "-Command", command], { cwd: process.cwd(), encoding: "utf8", windowsHide: true });
+  assert.equal(result.status, 0, result.stderr);
+  assert.ok(result.stdout.trim(), `ACL projection produced no output: ${result.stderr}`);
+  const parsed = JSON.parse(result.stdout);
+  return Array.isArray(parsed) ? parsed : [parsed];
 }
 
 async function waitForPath(path, timeoutMs = 15_000) {

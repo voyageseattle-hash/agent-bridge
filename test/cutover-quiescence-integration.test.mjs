@@ -26,12 +26,50 @@ test("exact cutover scripts complete under an empty PowerShell-scoped CIM invent
     const repeatedReport = JSON.parse(repeated.stdout);
     assert.equal(repeatedReport.status, "already-current");
     assert.equal(repeatedReport.stateAcl.after.compliant, true);
+    assert.deepEqual(repeatedReport.stateAcl.authorization, { applyStateAcl: true, protectionInvoked: false, rollbackPolicy: "forward-only-security-hardening" });
     assert.equal(repeatedReport.registrationBackupPath, null);
     assert.equal(repeatedReport.promotion.backupPath, null);
   } finally {
     await rm(fixture.root, { recursive: true, force: true });
   }
 });
+
+test("cutover refuses a noncompliant state ACL without explicit repair authorization", { skip: !onWindows }, async () => {
+  const fixture = await createFixture("acl-authorization");
+  try {
+    const result = await runCutover(fixture, emptyCalls(20), { applyStateAcl: false });
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /explicit -ApplyStateAcl authorization is required/i);
+    await assertExactState(fixture, fixture.originals);
+    const audit = runPowerShell("scripts/protect-state.ps1", ["-StateDir", fixture.paths.state, "-AuditOnly"]);
+    assert.equal(audit.status, 0, audit.stderr);
+    assert.equal(JSON.parse(audit.stdout).compliant, false, "an unauthorized cutover must not repair the ACL");
+  } finally {
+    await rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
+for (const scenario of [
+  { label: "different-hash", bytes: Buffer.from('{"fallback":true}\r\n', "utf8") },
+  { label: "different-path", bytes: null },
+]) {
+  test(`cutover rejects a fallback config with a ${scenario.label.replace("-", " ")}`, { skip: !onWindows }, async () => {
+    const fixture = await createFixture(`fallback-${scenario.label}`);
+    try {
+      const fallback = join(fixture.paths.state, "config.json");
+      const bytes = scenario.bytes ?? await readFile(fixture.paths.config);
+      await writeFile(fallback, bytes);
+      const result = await runCutover(fixture, emptyCalls(20));
+      assert.notEqual(result.status, 0);
+      assert.match(result.stderr, /fallback config whose path or SHA-256 differs/i);
+      assert.doesNotMatch(result.stderr, /client registrations were restored/i);
+      await assertExactState(fixture, fixture.originals);
+      assert.deepEqual(await readFile(fallback), bytes, "fallback config bytes changed");
+    } finally {
+      await rm(fixture.root, { recursive: true, force: true });
+    }
+  });
+}
 
 for (const initialSampleIndex of [1, 2]) {
   test(`a host in initial quiescence sample ${initialSampleIndex} leaves registrations and install pointers byte-identical`, { skip: !onWindows }, async () => {
@@ -53,7 +91,7 @@ for (const initialSampleIndex of [1, 2]) {
   });
 }
 
-for (const preSwitchSampleIndex of [6, 7]) {
+for (const preSwitchSampleIndex of [7, 8]) {
   test(`a host in pre-switch quiescence call ${preSwitchSampleIndex + 1} restores registrations and every install pointer`, { skip: !onWindows }, async () => {
     const fixture = await createFixture(`pre-switch-${preSwitchSampleIndex}`);
     const secret = `pre-switch-host-secret-${preSwitchSampleIndex}`;
@@ -82,7 +120,7 @@ test("a host descendant observed after the maintenance barrier restores registra
     // The twelfth CIM call is the operational sample immediately after the
     // bridge-only barrier precheck. The wrapper records the real shim bytes at
     // that exact call, then returns a host tree whose child is not a bridge.
-    calls[12] = {
+    calls[13] = {
       observePath: fixture.paths.shim,
       processes: [
         proc(310, 1, "codex.exe", "C:\\Codex.exe", secretRoot),
@@ -185,7 +223,7 @@ async function createFixture(label) {
   };
 }
 
-async function runCutover(fixture, calls) {
+async function runCutover(fixture, calls, { applyStateAcl = true } = {}) {
   const scenarioPath = join(fixture.root, "cim-calls.json");
   const callLogPath = join(fixture.root, "cim-call-count.txt");
   const observationPath = join(fixture.root, "cim-observation.txt");
@@ -212,6 +250,7 @@ async function runCutover(fixture, calls) {
     "-StateDir", fixture.paths.state,
     "-UserProfile", fixture.profile, "-AppData", fixture.appData, "-LocalAppData", fixture.localAppData,
     "-NodePath", process.execPath,
+    ...(applyStateAcl ? ["-ApplyStateAcl", "-StateAclBackupPath", join(fixture.root, "state-acl-backup.json")] : []),
   ], { cwd: process.cwd(), encoding: "utf8", windowsHide: true, maxBuffer: 4 * 1024 * 1024 });
   const callsMade = Number((await readFile(callLogPath, "utf8")).trim());
   let observedText = null;
@@ -232,7 +271,9 @@ param(
     [Parameter(Mandatory=$true)][string]$UserProfile,
     [Parameter(Mandatory=$true)][string]$AppData,
     [Parameter(Mandatory=$true)][string]$LocalAppData,
-    [Parameter(Mandatory=$true)][string]$NodePath
+    [Parameter(Mandatory=$true)][string]$NodePath,
+    [switch]$ApplyStateAcl,
+    [string]$StateAclBackupPath
 )
 $ErrorActionPreference = 'Stop'
 $global:AgentBridgeCimScenario = Get-Content -Raw -LiteralPath $ScenarioPath | ConvertFrom-Json
@@ -261,7 +302,9 @@ function global:Get-CimInstance {
     Invoke-AgentBridgeCimTestDouble @PSBoundParameters
 }
 try {
-    & $TargetScript -ReleaseId $ReleaseId -InstallRoot $InstallRoot -StateDir $StateDir -UserProfile $UserProfile -AppData $AppData -LocalAppData $LocalAppData -NodePath $NodePath -QuiescenceSamples 2 -QuiescenceIntervalMilliseconds 250
+    $targetArgs = @{ ReleaseId = $ReleaseId; InstallRoot = $InstallRoot; StateDir = $StateDir; UserProfile = $UserProfile; AppData = $AppData; LocalAppData = $LocalAppData; NodePath = $NodePath; QuiescenceSamples = 2; QuiescenceIntervalMilliseconds = 250 }
+    if ($ApplyStateAcl) { $targetArgs.ApplyStateAcl = $true; $targetArgs.StateAclBackupPath = $StateAclBackupPath }
+    & $TargetScript @targetArgs
 } catch {
     [Console]::Error.WriteLine($_.Exception.Message)
     exit 1
@@ -280,6 +323,12 @@ function proc(ProcessId, ParentProcessId, Name, ExecutablePath, CommandLine) { r
 function sha256(value) { return createHash("sha256").update(value).digest("hex"); }
 function escapeRegex(value) { return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"); }
 function assertSecretRedacted(result, secret) { assert.doesNotMatch(`${result.stdout}\n${result.stderr}`, new RegExp(escapeRegex(secret), "i")); }
+
+function runPowerShell(script, args) {
+  return spawnSync("powershell.exe", ["-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", script, ...args], {
+    cwd: process.cwd(), encoding: "utf8", windowsHide: true, maxBuffer: 4 * 1024 * 1024,
+  });
+}
 
 function operationContract() {
   const operations = [

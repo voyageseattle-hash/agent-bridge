@@ -22,6 +22,7 @@
     "test": "npm run build && node --test --test-concurrency=1 test/*.test.mjs",
     "smoke": "npm run build && node test/smoke.mjs",
     "canary:release": "node scripts/canary-release.mjs",
+    "canary:live-pointer": "node scripts/canary-live-pointer.mjs",
     "evidence:release": "node scripts/export-release-evidence.mjs",
     "evidence:verify": "node scripts/verify-release-evidence.mjs",
     "test:live:codex": "npm run build && node test/live-codex.mjs",

@@ -109,16 +109,24 @@ $candidate = "$env:USERPROFILE\.codex\agent-bridge\releases\<release-id>"
 & "$candidate\operations\configure-clients.ps1"
 ```
 
-Review every reported path, state, planned action, error, and active process. The script covers Codex, Claude Code, and detected Claude Desktop locations while preserving unrelated configuration, including single-quoted TOML values. Distinguish the installed shared config from the source checkout's example or a config beside source `dist`. Any explicit or fallback config whose canonical path or SHA-256 differs from the installed shared config blocks cutover. An ambiguous registration must be resolved deliberately; do not overwrite it by hand from a guessed example.
+Review every reported path, state, planned action, error, and active process. The script covers Codex, Claude Code, and detected Claude Desktop locations while preserving unrelated configuration, including single-quoted TOML values. Distinguish the installed shared config from the source checkout's example or a config beside source `dist`. Any explicit or fallback config whose canonical path or SHA-256 differs from the installed shared config blocks cutover even if no current registration selects it. Preserve a divergent fallback's exact bytes and hash in a reviewed protected backup outside the fallback location before deliberately moving it aside; release automation must not delete or relocate it. Audit the state ACL before transaction: omit `-ApplyStateAcl` when compliant; if noncompliant, provide a nonexisting absolute `-StateAclBackupPath` outside state and install, obtain explicit operator authorization, then add `-ApplyStateAcl`. A successful hardening is forward-only security hardening: later registration/promotion failure retains the hardening and receipt-backed external snapshot; only `protect-state.ps1 -RestoreFrom <backup> -ExpectedBackupSha256 <lowercase-sha256>` may explicitly restore it. An ambiguous registration must be resolved deliberately; do not overwrite it by hand from a guessed example.
 
 For a release cutover, do not run standalone `-Apply`. Fully quit every MCP host, verify repeated host-family quiescence, and use the one-lock transaction:
 
 ```powershell
 & "$candidate\operations\check-cutover-readiness.ps1"
-& "$candidate\operations\cutover-release.ps1" -ReleaseId '<version+sha7>'
+$stagedConfig = 'C:\absolute\private-evidence\staged-core-config.json'
+$expectedConfigSha256 = '<lowercase-sha256>'
+$stateAclBackup = 'C:\absolute\private-evidence\state-acl-before-rc9.json'
+& "$candidate\operations\cutover-release.ps1" `
+  -ReleaseId '<version+sha7>' `
+  -StagedConfigPath $stagedConfig `
+  -ExpectedConfigSha256 $expectedConfigSha256 `
+  -ApplyStateAcl `
+  -StateAclBackupPath $stateAclBackup
 ```
 
-The readiness command checks Agent Bridge nodes plus known Codex/Claude host processes and descendants across multiple samples. It never closes an app. A background watcher may notify you that the system appears ready, but it must never run a cutover automatically. The cutover command rechecks under its install lock, establishes a refusing startup barrier, and restores registrations and release pointers if promotion fails. Record both returned backup paths.
+The complete command above is the current maintenance-window form because the known live ACL is noncompliant. If the immediately preceding audit is compliant, omit only `-ApplyStateAcl` and `-StateAclBackupPath`; never omit the staged core config or its exact SHA-256 for RC9 acceptance. The readiness command checks Agent Bridge nodes plus known Codex/Claude host processes and descendants across multiple samples. It never closes an app. A background watcher may notify you that the system appears ready, but it must never run a cutover automatically. The cutover command rechecks under its install lock, establishes a refusing startup barrier, and restores registrations and release pointers if promotion fails. Record both returned backup paths.
 
 To preview a registration restore, omit `-Apply`; to perform it in a deliberate recovery window after all hosts are closed:
 
@@ -189,9 +197,15 @@ The source-only wrapper never edits client registrations or accepts a live insta
 1. Fully quit all MCP hosts.
 2. Confirm `activeProcessCount` is zero with `<trusted-release>\operations\inspect-install.ps1`.
 3. Prefer switching to the prior immutable release with `<trusted-release>\operations\switch-release.ps1 -ReleaseId <prior-version+sha7>`. Use the newest verified operational script bytes even though the target runtime is older. For emergency backup restore, restore shim, config, and promotion marker together according to `rollback-state.json`; remove the marker when the backup records prior absence.
-4. Restart one host, verify runtime identity and hash, then run one read-only canary. Use `diagnose_install` when the restored release provides it; for v0.2.1, use immutable metadata/runtime hashes plus the MCP initialization version and `list_agents`.
-5. Restart the remaining hosts only after the canary passes.
-6. Preserve both releases, the failed artifact, hashes, sanitized logs, workboard/recommendation exports, and rollback record. Do not copy credentials or raw confidential transcripts into a report.
+4. Before restarting a host, run the pointer-only gate through the restored stable shim. `rollback-minimum` accepts only the exact historical `0.2.1+4785d63` source identity, and every hash must come from the reviewed install/package record or the just-completed switch receipt:
+
+   ```powershell
+   node .\scripts\canary-live-pointer.mjs --release-path '<absolute-prior-release-path>' --install-root '<absolute-install-root>' --expected-version 0.2.1 --expected-source-git-sha 4785d630c416df692869540a52466c9895cfa6d6 --expected-runtime-sha256 '<reviewed-runtime-sha256>' --expected-metadata-sha256 '<reviewed-metadata-sha256>' --expected-manifest-sha256 '<reviewed-manifest-sha256>' --expected-stable-shim-sha256 '<switch-receipt-shim-sha256>' --expected-shared-config-sha256 '<switch-receipt-config-sha256>' --evidence-dir 'C:\absolute\private-evidence\rollback-pointer-canary' --profile rollback-minimum
+   ```
+
+5. Restart one host only after that gate passes, verify runtime identity and hash, then run one read-only live canary. Use `diagnose_install` when the restored release provides it; for v0.2.1, verify immutable metadata/runtime hashes plus the MCP initialization version, then invoke `list_agents` and a disposable read-only delegation.
+6. Restart the remaining hosts only after the live canary passes.
+7. Preserve both releases, the failed artifact, hashes, sanitized logs, workboard/recommendation exports, and rollback record. Do not copy credentials or raw confidential transcripts into a report.
 
 ## Evidence packet
 

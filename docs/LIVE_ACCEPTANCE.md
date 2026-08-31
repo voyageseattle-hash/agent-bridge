@@ -23,7 +23,7 @@ Copy this checklist into the release evidence packet. Use `pass`, `fail`, `block
 - [ ] `<candidate-release>\operations\inspect-install.ps1` output exported.
 - [ ] Installed shared config exists and its canonical path/SHA-256 are recorded without exporting its contents; it is not confused with the source checkout's `config.example.json` or a config beside source `dist`.
 - [ ] Every detected explicit or fallback config path, including registrations parsed from single-quoted TOML, resolves to the installed shared config with the same SHA-256. Any divergent fallback is a cutover blocker.
-- [ ] State ACL is protected and unexpected allow identities are resolved or explicitly accepted.
+- [ ] State ACL audit is compliant. If repair was necessary, a new hash-pinned backup path outside state/install was supplied with `-ApplyStateAcl`; the receipt records its path/hash, `rollbackPolicy: forward-only-security-hardening`, and whether protection was invoked. Later cutover failure does not roll back a successful hardening.
 - [ ] Codex, Claude Code, and every detected Claude Desktop registration target the stable shim.
 - [ ] No registration pins a path below `releases\`.
 - [ ] Candidate `--doctor --json` reports the intended runtime, config source/hash, sandbox, roots, and promotion status.
@@ -103,6 +103,9 @@ For a future release that accepts `windows-local-manus`, record this as required
 - [ ] Release switching used the refusing maintenance-shim barrier, rechecked zero active processes while the barrier was active, and recorded no recovery event.
 - [ ] Cutover rechecked full host-family quiescence before registration writes, before switching, and behind the maintenance barrier; any nonempty or failed process query refused or restored the transaction.
 - [ ] Promotion backup records exact prior shim, config, and marker bytes or explicit marker absence.
+- [ ] Before any client restart, `scripts\canary-live-pointer.mjs` passed through the current stable shim with exact release, version, reviewed source-Git, metadata, manifest, runtime, shim, and shared-config hashes plus a new external evidence directory. Those reviewed identity values came from the reviewed install/package record. `strict` is limited to RC9; `rollback-minimum` is limited to historical `0.2.1+4785d63`.
+- [ ] The pointer-only evidence validates every metadata-pinned immutable payload and the manifest/runtime identity, exact marker/shim/config binding, and a sanitized `windows-local-core` projection: Codex/Claude enabled; Gemini/Manus/direct remote egress disabled; direct-remote allowlist empty.
+- [ ] The pointer-only gate performed only MCP initialization and tool discovery, forwarded no ambient Agent Bridge selector or provider/credential override, attempted zero delegations, observed no session-record drift, and recorded identical shim/config/marker hashes before and after. Its evidence contains no raw config, credentials, roots, provider details, or session contents.
 - [ ] Codex is restarted and passes `diagnose_install`, `list_agents`, and one read-only task.
 - [ ] Claude Code is restarted and passes the same checks.
 - [ ] Claude Desktop is restarted and passes the same checks.
